@@ -1116,3 +1116,31 @@
 - [x] 2026-09-04 VERIFY：`pnpm --dir desktop build` 通过。
 - [x] 2026-09-04 资源同步：`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-orson-v1.5.5_linux_amd64` 均已由同步脚本生成；两个大二进制继续由 `.gitignore` 排除，发布包由 CI/构建脚本生成。
 - [x] 2026-09-04 代码审查跟进：修复运行体选择持久化、Release 下载 SHA256 校验、主后端版本硬编码、健康检查误复用旧运行体；本地开发构建仍允许 Orson 资源下载失败后跳过，官方 release workflow 负责强制打包和校验备用资源。
+
+## 阶段 6T：对比 hzlmy2002/vohive-collection 的可合并能力
+
+### 根因调查
+
+- [x] 2026-09-04 已克隆 `hzlmy2002/vohive-collection` 到 `.tmp/vohive-collection`，当前对照提交为 `0c3052c`；该仓库是源码快照集合，包含 `vohive`、`vowifi-go`、`swu-go`、`quectel-qmi-go`、`uicc-go`、`euicc-go`、`netlink`、`qqbot` 等。
+- [x] 2026-09-04 本项目已先提交保存：`209e5b9 修复 VoWiFi 代理数据面并支持备用后端`；当前本地 `main` 相对 `origin/main` 为 ahead 1。
+- [x] 2026-09-04 `third_party/quectel-qmi-go` 与 collection 的 `quectel-qmi-go` 内容差异只集中在 `go.mod/go.sum`，当前 QMI/短信问题不应优先通过整体替换 QMI 库解决。
+- [x] 2026-09-04 collection 的 `vowifi-go` 通过 `replace github.com/iniwex5/swu-go => ../swu-go` 使用独立 `swu-go`；本项目则在 `third_party/vowifi-go/engine/swu` 内实现 SWU/IKE，不能直接覆盖目录。
+- [x] 2026-09-04 collection `swu-go/pkg/swu/state_init.go`、`swu-go/pkg/ikev2/proposal_match.go` 明确包含多 proposal、`INVALID_KE_PAYLOAD` preferred group、COOKIE、REDIRECT、IKE Fragmentation、DPD/MOBIKE/滑动窗口重传等能力。
+- [x] 2026-09-04 本项目当前 `third_party/vowifi-go/engine/swu/ikev2/init.go` 默认 `DefaultIKEProposal()` 仍是单 proposal，默认 DH 是 Curve25519；仅看到 MODP 2048 支持，未看到 MODP 1024/1536、首轮 COOKIE、REDIRECT、IKE Fragmentation 的完整 SA_INIT 重协商实现。
+- [x] 2026-09-04 collection 有运营商 preset 框架与 YAML，如 `three_uk_234020.yaml`、`giffgaff_23410.yaml`、`vodafone_nl_20404.yaml`；未看到 VOXI/Vodafone UK `23415` 专用 preset，不能直接声称可搬配置解决 VOXI。
+
+### 结论
+
+- [x] P1：本项目当前最可能的真实缺口是 SWU/IKE 兼容性，不是 SIM、代理、WSL USB 或 QMI 库。Orson 对照成功日志里的 `preferred_group=2`、`sha1_legacy`、`MODP_1024` 与 collection `swu-go` 的能力一致。
+- [x] P1：下一步应测试驱动移植 `INVALID_KE preferred_group=2` 后重发 SA_INIT、MODP 1024、legacy SHA1 proposal、多 proposal 协商。
+- [x] P2：在 P1 打通后，再考虑移植 COOKIE、REDIRECT、IKE Fragmentation、DPD/重传窗口；这些更偏复杂网络环境和稳定性。
+- [x] P2：运营商 preset 机制值得借鉴，但要先补 VOXI/Vodafone UK `23415` 的实测配置承载点，不能直接套用 collection 现有 UK preset。
+- [x] P3：collection 的 `cscall`、`sipgw`、`sms/poller.go`、`modem/urc_listener.go` 属于功能增强或备用路径，和当前 WiFi Calling 拉起失败不是同一优先级，不建议现在大块合并。
+
+### 下一步建议
+
+- [ ] RED：为本项目 `RunIKE_SA_INIT` 或上层 `IKEPacketTunnelManager` 增加 `INVALID_KE_PAYLOAD` 响应测试，模拟 ePDG 返回 preferred group 2，要求重新生成 DH 并重发 SA_INIT。
+- [ ] GREEN：新增 MODP 1024/1536 常量、密钥生成和共享密钥计算，优先确保 MODP 1024 + SHA1 legacy 组合可完成本地协议测试。
+- [ ] GREEN：新增多 proposal 构造器，至少覆盖 SHA2/MODP2048 与 SHA1/MODP1024 两类，默认顺序要可控并记录日志。
+- [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。
+- [ ] 后续：P1 仍失败时，再逐个补 COOKIE、REDIRECT、IKE Fragmentation、DPD/窗口重传，避免一次性搬完整 `swu-go` 引入不可控回归。
