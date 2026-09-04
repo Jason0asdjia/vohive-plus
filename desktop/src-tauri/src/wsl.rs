@@ -130,11 +130,8 @@ pub fn vohive_backend_pids(timeout: Duration) -> Result<Vec<u32>, String> {
         return Ok(Vec::new());
     }
 
-    let output = run_root_shell_timeout(
-        "pgrep -f '^/opt/vohive/bin/vohive( |$)' || true",
-        timeout,
-    )
-    .map_err(|err| err.to_string())?;
+    let output = run_root_shell_timeout("pgrep -f '^/opt/vohive/bin/vohive( |$)' || true", timeout)
+        .map_err(|err| err.to_string())?;
 
     if !output.status.success() {
         return Err(clean_output(&output.stderr));

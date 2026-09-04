@@ -15,6 +15,15 @@ test('release workflow builds portable desktop zip with runtime resources', () =
   assert.match(workflow, /vohive-open_linux_amd64/)
 })
 
+test('release workflow includes the Orson fallback backend resource in desktop package', () => {
+  assert.match(workflow, /Download Orson fallback backend resource/)
+  assert.match(workflow, /Orson-Yan\/Vohive-155/)
+  assert.match(workflow, /vohive-orson-v1\.5\.5_linux_amd64/)
+  assert.match(workflow, /841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd/)
+  assert.match(workflow, /Get-FileHash -LiteralPath \$dest -Algorithm SHA256/)
+  assert.match(workflow, /Orson fallback backend SHA256 mismatch/)
+})
+
 test('release workflow publishes versioned release notes and Linux runtime assets', () => {
   assert.match(workflow, /branches:\s*\n\s*-\s*main/)
   assert.match(workflow, /\.github\/release-notes\/\$\{\{\s*needs\.vars\.outputs\.tag\s*\}\}\.md/)

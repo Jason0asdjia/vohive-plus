@@ -260,7 +260,19 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 			logger.Warn("进入飞行模式失败，继续尝试建立隧道",
 				"trace_id", traceID, "device", deviceID, "err", err)
 		} else {
-			time.Sleep(500 * time.Millisecond)
+			warmup := waitVoWiFiFlightWarmup(p.ctx, modemIface, defaultVoWiFiFlightWarmupWait, defaultVoWiFiFlightWarmupPoll)
+			logFields := []interface{}{
+				"trace_id", traceID,
+				"device", deviceID,
+				"reg_status", warmup.RegStatus,
+				"reg_status_text", warmup.RegStatusText,
+				"attempts", warmup.Attempts,
+			}
+			if warmup.Ready {
+				logger.Info("飞行模式预热完成，开始建立 VoWiFi 隧道", logFields...)
+			} else {
+				logger.Warn("飞行模式预热等待超时，继续尝试建立 VoWiFi 隧道", logFields...)
+			}
 		}
 	}
 

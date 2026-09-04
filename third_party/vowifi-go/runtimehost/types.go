@@ -1219,6 +1219,8 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 	return swu.NewTUNIKETunnelManager(
 		swu.IKEPacketTunnelManagerConfig{
 			SIM:                     req.SIM,
+			InitRetryAttempts:       3,
+			InitRetryDelay:          time.Second,
 			Reauthentication:        req.EAPReauthentication,
 			OnReauthenticationState: req.OnEAPReauthenticationState,
 		},

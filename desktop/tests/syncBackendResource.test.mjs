@@ -10,7 +10,7 @@ const script = fileURLToPath(new URL('../scripts/sync-backend-resource.mjs', imp
 
 function runSync(env) {
   return spawnSync(process.execPath, [script], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, VOHIVE_ORSON_BACKEND_URL: '', ...env },
     encoding: 'utf8',
   })
 }
@@ -31,6 +31,33 @@ test('sync backend resource copies built Linux runtime into desktop resources', 
     assert.equal(result.status, 0, result.stderr)
     assert.equal(readFileSync(destination, 'utf8'), 'linux-runtime')
     assert.match(result.stdout, /Synced Linux backend resource/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('sync backend resource copies Orson fallback runtime when provided', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vohive-sync-orson-resource-'))
+  try {
+    const mainSource = join(dir, 'dist', 'vohive-open_linux_amd64')
+    const source = join(dir, 'release', 'vohive_v1.5.5-10-gf9eb85d_linux_amd64')
+    const mainDestination = join(dir, 'desktop', 'resources', 'vohive-open_linux_amd64')
+    const destination = join(dir, 'desktop', 'resources', 'vohive-orson-v1.5.5_linux_amd64')
+    mkdirSync(join(dir, 'dist'), { recursive: true })
+    mkdirSync(join(dir, 'release'), { recursive: true })
+    writeFileSync(mainSource, 'main-runtime')
+    writeFileSync(source, 'orson-runtime')
+
+    const result = runSync({
+      VOHIVE_BACKEND_SOURCE: mainSource,
+      VOHIVE_BACKEND_DEST: mainDestination,
+      VOHIVE_ORSON_BACKEND_SOURCE: source,
+      VOHIVE_ORSON_BACKEND_DEST: destination,
+    })
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(destination, 'utf8'), 'orson-runtime')
+    assert.match(result.stdout, /Synced Orson fallback backend resource/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

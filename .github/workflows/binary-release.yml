@@ -268,6 +268,22 @@ jobs:
           }
           Copy-Item -LiteralPath $source -Destination "src-tauri\resources\vohive\vohive-open_linux_amd64" -Force
 
+      - name: Download Orson fallback backend resource
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $url = "https://raw.githubusercontent.com/Orson-Yan/Vohive-155/main/release/vohive_v1.5.5-10-gf9eb85d_linux_amd64"
+          $dest = "src-tauri\resources\vohive\vohive-orson-v1.5.5_linux_amd64"
+          $expectedHash = "841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd"
+          Invoke-WebRequest -Uri $url -OutFile $dest
+          if (!(Test-Path -LiteralPath $dest)) {
+            throw "Missing Orson fallback backend resource: $dest"
+          }
+          $actualHash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Orson fallback backend SHA256 mismatch: expected $expectedHash, got $actualHash"
+          }
+
       - name: Install desktop dependencies
         working-directory: desktop
         shell: pwsh

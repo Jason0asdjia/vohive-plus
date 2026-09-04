@@ -178,3 +178,18 @@
 - WSL `prepare-usb` 不能只写死当前截图里的单个 PID；Quectel 模组应按厂商 ID `2c7c:*` 支持，并按实际枚举到的 VID/PID 写入 `option1/new_id` 与 `qmi_wwan/new_id`。
 - `2ca3:4006` 是 DJI/Baiwang 伪装后的精确 ID，需要保留；桌面 `usbipd list` 还可用设备名包含 `Baiwang` 或 `Quectel` 做辅助识别。
 - 不要把 `05c6:*` 这类 Qualcomm 厂商 ID 无条件放进 prepare-usb 支持范围；里面可能包含下载/诊断模式，必须先结合运行拓扑或实机证据再扩展。
+
+## 2026-09-03 VoWiFi 前置代理数据面
+
+- VoWiFi 前置代理自检通过只说明后端能完成 SOCKS5 握手和 UDP Associate；不能据此推断 SWU/IKE 数据面已经使用代理。必须看 SWU transport 实现是否真正把 IKE_INIT 和 ESP/NAT-T UDP 包封装进 SOCKS5 UDP relay。
+- 日志出现 `VoWiFi 国家前置代理已命中` 后，如果错误仍是 `read udp 本机IP:端口->ePDG:4500`，要优先追 `TunnelConfig.Proxy` 到 IKE/ESP transport 的数据流，而不是继续让用户换代理地址。
+- `runtimehost.ProxyConfig` 和 `swu.ProxyConfig` 虽字段相同但属于不同包；传入配置后还要确认下游使用点，避免“配置字段存在但业务层完全忽略”的假阳性。
+- `.wslconfig` 的 `hostAddressLoopback=true` 属于 `[experimental]` 节点，不是 `[wsl2]`；修改后必须 `wsl --shutdown`，并且 WSL2 USB/IP 设备会被断开，需要重新 `usbipd attach` 和 `--prepare-usb`。
+- WSL mirrored 下不能只验证 SOCKS5 TCP 或 UDP Associate 握手；要用真实 UDP 请求验证 relay 能收到响应。本机启用 `hostAddressLoopback=true` 后，`127.0.0.1:10808` 的 SOCKS5 UDP DNS live 测试通过；Windows 主机 IPv4 `192.168.0.123:10808` 当前会 `connection refused`，不能作为稳定入口。
+- SOCKS5 UDP live DNS 只证明 UDP relay 可用，不等于 VoWiFi 目标国家链路可用；验证国家前置代理时必须继续确认 UDP 出口 IP 的地理国家/ASN，并用同一个代理出口对目标国家 ePDG 的 UDP 4500 跑 IKE_INIT 探针，避免“DNS 可通但出口国家或目标链路不符合”的误判。
+- VoWiFi 启动失败前会把模组切到 `CFUN=4` 以关闭原生 IMS；失败恢复射频不能依赖“数据网络恢复意图”。即使蜂窝数据本来关闭，也必须把射频恢复到 `ModeOnline`，数据连接是否重连再单独按原意图处理。
+- 手机代理/VPN/TUN + 热点给 iPhone 的成功路径，不能等同于 Windows v2rayN SOCKS5 UDP Associate 路径；即使节点和 SIM 相同，也要分别验证 WSL 到 v2rayN、v2rayN UDP relay、出口国家、ePDG IKE 响应四层。
+- Shadowrocket WiFi Calling 规则的直接价值是分流范围：UDP 500/4500、Vodafone/VOXI entitlement 域名、ePDG 域名和 IP 段；它不包含 iPhone 真实 IKE_SA_INIT proposal、Vendor ID、NAT-D、payload 顺序等协议细节，不能拿规则文本直接推断 SWU 实现正确。
+- IKE_SA_INIT 阶段尚未进入 EAP-AKA/IMS 身份认证，ePDG 通常只能看到源公网 IP、UDP 端口、IKE proposal、Vendor ID、NAT-D 等首包特征；“卡先在 CN 漫游驻网”更可能影响本地模组/SIM/启动时序，而不是让 ePDG 在首包阶段直接识别 IMSI。
+- 真实手机 WiFi Calling 可能多次尝试才成功，VoHive 不能只用一次 IKE_INIT 超时作为最终用户体验；应在诊断模式记录多次尝试、候选 ePDG IP 和每次错误，但不能把无限重试当成根因修复。
+- 桌面壳里的“后端运行体选择”是用户意图配置，不是一次性按钮状态；作为可部署备用后端时必须持久保存，并在读取到未知旧值时回退默认后端，避免重启应用后悄悄恢复到另一套运行体。

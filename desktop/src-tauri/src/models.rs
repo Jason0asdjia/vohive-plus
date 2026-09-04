@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolStatus {
@@ -25,6 +25,15 @@ pub struct BackendStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BackendVariant {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub resource_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct HealthStatus {
     pub ok: bool,
     pub url: String,
@@ -38,6 +47,8 @@ pub struct RuntimeStatus {
     pub usbipd: ToolStatus,
     pub devices: Vec<UsbDevice>,
     pub backend: BackendStatus,
+    pub backend_variants: Vec<BackendVariant>,
+    pub selected_backend_variant: String,
     pub health: HealthStatus,
 }
 
@@ -47,4 +58,9 @@ pub struct ActionResult {
     pub message: String,
     pub status: Option<RuntimeStatus>,
     pub suggested_admin_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetBackendVariantRequest {
+    pub variant_id: String,
 }

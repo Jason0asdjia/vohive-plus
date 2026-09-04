@@ -4,11 +4,12 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdh"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"strings"
 	"time"
@@ -124,7 +125,7 @@ func RunIKE_SA_INIT(ctx context.Context, cfg InitConfig) (InitResult, error) {
 	}
 	random := cfg.Random
 	if random == nil {
-		random = rand.Reader
+		random = crand.Reader
 	}
 	spiI := cfg.InitiatorSPI
 	var err error
@@ -141,14 +142,14 @@ func RunIKE_SA_INIT(ctx context.Context, cfg InitConfig) (InitResult, error) {
 			return InitResult{}, err
 		}
 	}
-	priv, err := x25519PrivateKey(cfg.X25519PrivateKey, random)
-	if err != nil {
-		return InitResult{}, err
-	}
-	pubI := priv.PublicKey().Bytes()
 	sa := cfg.SA
 	if len(sa.Proposals) == 0 {
 		sa = DefaultIKEProposal()
+	}
+	dhGroup := selectedDHGroup(sa)
+	priv, pubI, err := initKeyExchange(dhGroup, cfg.X25519PrivateKey, random)
+	if err != nil {
+		return InitResult{}, err
 	}
 	saPayload, err := SecurityAssociationPayload(sa)
 	if err != nil {
@@ -156,7 +157,7 @@ func RunIKE_SA_INIT(ctx context.Context, cfg InitConfig) (InitResult, error) {
 	}
 	payloads := []Payload{
 		saPayload,
-		KeyExchangePayload(DHGroupCurve25519, pubI),
+		KeyExchangePayload(dhGroup, pubI),
 		NoncePayload(nonceI),
 	}
 	payloads = append(payloads, initNATPayloads(cfg, spiI, 0)...)
@@ -185,11 +186,10 @@ func RunIKE_SA_INIT(ctx context.Context, cfg InitConfig) (InitResult, error) {
 	if err != nil {
 		return InitResult{}, err
 	}
-	respPub, err := ecdh.X25519().NewPublicKey(parsed.keyExchange.KeyData)
-	if err != nil {
-		return InitResult{}, fmt.Errorf("%w: responder KE: %w", ErrInvalidInitResponse, err)
+	if parsed.keyExchange.DHGroup != dhGroup {
+		return InitResult{}, fmt.Errorf("%w: responder DH group %d != requested %d", ErrInvalidInitResponse, parsed.keyExchange.DHGroup, dhGroup)
 	}
-	shared, err := priv.ECDH(respPub)
+	shared, err := priv.sharedSecret(parsed.keyExchange.KeyData)
 	if err != nil {
 		return InitResult{}, fmt.Errorf("%w: ECDH: %w", ErrInvalidInitResponse, err)
 	}
@@ -272,9 +272,6 @@ func parseInitResponse(resp Message, spiI uint64) (parsedInitResponse, error) {
 			if err != nil {
 				return parsedInitResponse{}, err
 			}
-			if ke.DHGroup != DHGroupCurve25519 {
-				return parsedInitResponse{}, fmt.Errorf("%w: unsupported DH group %d", ErrInvalidInitResponse, ke.DHGroup)
-			}
 			out.keyExchange = ke
 		case PayloadNonce:
 			out.nonceR = append([]byte(nil), p.Body...)
@@ -353,11 +350,185 @@ func selectedPRFHash(sa SecurityAssociation) crypto.Hash {
 	return crypto.SHA256
 }
 
-func x25519PrivateKey(raw []byte, random io.Reader) (*ecdh.PrivateKey, error) {
-	if len(raw) > 0 {
-		return ecdh.X25519().NewPrivateKey(append([]byte(nil), raw...))
+func selectedDHGroup(sa SecurityAssociation) uint16 {
+	for _, p := range sa.Proposals {
+		for _, tr := range p.Transforms {
+			if tr.Type == TransformDHRGroup && tr.ID != 0 {
+				return tr.ID
+			}
+		}
 	}
-	return ecdh.X25519().GenerateKey(random)
+	return DHGroupCurve25519
+}
+
+type ikeInitPrivateKey interface {
+	sharedSecret(peerKeyData []byte) ([]byte, error)
+}
+
+type ecdhInitPrivateKey struct {
+	group uint16
+	priv  *ecdh.PrivateKey
+}
+
+func (k ecdhInitPrivateKey) sharedSecret(peerKeyData []byte) ([]byte, error) {
+	peer, err := ikePublicKey(k.group, peerKeyData)
+	if err != nil {
+		return nil, err
+	}
+	return k.priv.ECDH(peer)
+}
+
+type modpInitPrivateKey struct {
+	x    *big.Int
+	p    *big.Int
+	size int
+}
+
+func (k modpInitPrivateKey) sharedSecret(peerKeyData []byte) ([]byte, error) {
+	if len(peerKeyData) == 0 || len(peerKeyData) > k.size {
+		return nil, fmt.Errorf("%w: MODP peer key length %d", ErrInvalidInitResponse, len(peerKeyData))
+	}
+	y := new(big.Int).SetBytes(peerKeyData)
+	if y.Sign() <= 0 || y.Cmp(k.p) >= 0 {
+		return nil, fmt.Errorf("%w: MODP peer key is out of range", ErrInvalidInitResponse)
+	}
+	secret := new(big.Int).Exp(y, k.x, k.p)
+	return fixedLengthBigInt(secret, k.size), nil
+}
+
+func initKeyExchange(group uint16, rawX25519 []byte, random io.Reader) (ikeInitPrivateKey, []byte, error) {
+	if group == DHGroup2048BitMODP {
+		if len(rawX25519) > 0 {
+			return nil, nil, fmt.Errorf("%w: raw private key is only supported for Curve25519", ErrInvalidInitConfig)
+		}
+		p := modp2048Prime()
+		size := (p.BitLen() + 7) / 8
+		max := new(big.Int).Sub(p, big.NewInt(3))
+		x, err := crand.Int(random, max)
+		if err != nil {
+			return nil, nil, err
+		}
+		x.Add(x, big.NewInt(2))
+		pub := new(big.Int).Exp(big.NewInt(2), x, p)
+		return modpInitPrivateKey{x: x, p: p, size: size}, fixedLengthBigInt(pub, size), nil
+	}
+	curve, err := ecdhCurveForGroup(group)
+	if err != nil {
+		return nil, nil, err
+	}
+	var priv *ecdh.PrivateKey
+	if len(rawX25519) > 0 {
+		if group != DHGroupCurve25519 {
+			return nil, nil, fmt.Errorf("%w: raw private key is only supported for Curve25519", ErrInvalidInitConfig)
+		}
+		priv, err = curve.NewPrivateKey(append([]byte(nil), rawX25519...))
+	} else {
+		priv, err = curve.GenerateKey(random)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	pub, err := ikePublicKeyData(group, priv.PublicKey().Bytes())
+	if err != nil {
+		return nil, nil, err
+	}
+	return ecdhInitPrivateKey{group: group, priv: priv}, pub, nil
+}
+
+func ikePublicKey(group uint16, keyData []byte) (*ecdh.PublicKey, error) {
+	curve, err := ecdhCurveForGroup(group)
+	if err != nil {
+		return nil, err
+	}
+	switch group {
+	case DHGroupCurve25519:
+		return curve.NewPublicKey(append([]byte(nil), keyData...))
+	case DHGroup256BitECP, DHGroup384BitECP, DHGroup521BitECP:
+		wantLen := ecpKeyDataLength(group)
+		if len(keyData) != wantLen {
+			return nil, fmt.Errorf("%w: ECP key data length %d, want %d", ErrInvalidInitResponse, len(keyData), wantLen)
+		}
+		raw := make([]byte, 0, wantLen+1)
+		raw = append(raw, 0x04)
+		raw = append(raw, keyData...)
+		return curve.NewPublicKey(raw)
+	default:
+		return nil, fmt.Errorf("%w: unsupported DH group %d", ErrInvalidInitConfig, group)
+	}
+}
+
+func ikePublicKeyData(group uint16, public []byte) ([]byte, error) {
+	switch group {
+	case DHGroupCurve25519:
+		if len(public) != 32 {
+			return nil, fmt.Errorf("%w: Curve25519 public key length %d", ErrInvalidInitConfig, len(public))
+		}
+		return append([]byte(nil), public...), nil
+	case DHGroup256BitECP, DHGroup384BitECP, DHGroup521BitECP:
+		wantLen := ecpKeyDataLength(group)
+		if len(public) != wantLen+1 || public[0] != 0x04 {
+			return nil, fmt.Errorf("%w: ECP public key length %d, want %d", ErrInvalidInitConfig, len(public), wantLen+1)
+		}
+		return append([]byte(nil), public[1:]...), nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported DH group %d", ErrInvalidInitConfig, group)
+	}
+}
+
+func ecdhCurveForGroup(group uint16) (ecdh.Curve, error) {
+	switch group {
+	case DHGroupCurve25519:
+		return ecdh.X25519(), nil
+	case DHGroup256BitECP:
+		return ecdh.P256(), nil
+	case DHGroup384BitECP:
+		return ecdh.P384(), nil
+	case DHGroup521BitECP:
+		return ecdh.P521(), nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported DH group %d", ErrInvalidInitConfig, group)
+	}
+}
+
+func ecpKeyDataLength(group uint16) int {
+	switch group {
+	case DHGroup256BitECP:
+		return 64
+	case DHGroup384BitECP:
+		return 96
+	case DHGroup521BitECP:
+		return 132
+	default:
+		return 0
+	}
+}
+
+func modp2048Prime() *big.Int {
+	p, _ := new(big.Int).SetString(
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+			"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+			"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+			"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7E"+
+			"DEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3"+
+			"DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5"+
+			"F83655D23DCA3AD961C62F356208552BB9ED529077096966"+
+			"D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3"+
+			"BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C"+
+			"9DE2BCBF6955817183995497CEA956AE515D2261898FA0510"+
+			"15728E5A8AACAA68FFFFFFFFFFFFFFFF",
+		16,
+	)
+	return p
+}
+
+func fixedLengthBigInt(n *big.Int, size int) []byte {
+	out := make([]byte, size)
+	b := n.Bytes()
+	if len(b) > size {
+		b = b[len(b)-size:]
+	}
+	copy(out[size-len(b):], b)
+	return out
 }
 
 func randomSPI(random io.Reader) (uint64, error) {

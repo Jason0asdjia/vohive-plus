@@ -14,6 +14,7 @@ import (
 
 type initFakeTransport struct {
 	t            *testing.T
+	group        uint16
 	responderSPI uint64
 	responderKey []byte
 	nonceR       []byte
@@ -37,13 +38,25 @@ func (f *initFakeTransport) ExchangeIKE(ctx context.Context, request []byte) ([]
 	if len(req.Payloads) < 3 || req.Payloads[0].Type != PayloadSA || req.Payloads[1].Type != PayloadKE || req.Payloads[2].Type != PayloadNonce {
 		f.t.Fatalf("request payloads=%+v", req.Payloads)
 	}
-	privR, err := ecdh.X25519().NewPrivateKey(f.responderKey)
+	group := f.group
+	if group == 0 {
+		group = DHGroupCurve25519
+	}
+	curve, err := ecdhCurveForGroup(group)
+	if err != nil {
+		return nil, err
+	}
+	privR, err := curve.NewPrivateKey(f.responderKey)
+	if err != nil {
+		return nil, err
+	}
+	pubR, err := ikePublicKeyData(group, privR.PublicKey().Bytes())
 	if err != nil {
 		return nil, err
 	}
 	payloads := []Payload{
 		req.Payloads[0],
-		KeyExchangePayload(DHGroupCurve25519, privR.PublicKey().Bytes()),
+		KeyExchangePayload(group, pubR),
 		NoncePayload(f.nonceR),
 	}
 	src, err := NATDetectionNotify(NotifyNATDetectionSourceIP, req.Header.InitiatorSPI, f.responderSPI, f.remoteIP, f.remotePort)
@@ -65,6 +78,54 @@ func (f *initFakeTransport) ExchangeIKE(ctx context.Context, request []byte) ([]
 		Payloads: payloads,
 	}
 	return resp.MarshalBinary()
+}
+
+func TestRunIKESAInitSupportsECP256(t *testing.T) {
+	nonceI := bytes.Repeat([]byte{0xa1}, 32)
+	nonceR := bytes.Repeat([]byte{0xb2}, 32)
+	fake := &initFakeTransport{
+		t:            t,
+		group:        DHGroup256BitECP,
+		responderSPI: 0x1112131415161718,
+		responderKey: bytes.Repeat([]byte{0x22}, 32),
+		nonceR:       nonceR,
+		remoteIP:     net.ParseIP("192.0.2.20"),
+		remotePort:   500,
+		localIP:      net.ParseIP("192.0.2.10"),
+		localPort:    500,
+	}
+	res, err := RunIKE_SA_INIT(context.Background(), InitConfig{
+		Transport:    fake,
+		InitiatorSPI: 0x0102030405060708,
+		NonceI:       nonceI,
+		SA: SecurityAssociation{Proposals: []Proposal{{
+			Number:     1,
+			ProtocolID: ProtocolIKE,
+			Transforms: []Transform{
+				{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
+				{Type: TransformPRF, ID: PRF_HMAC_SHA2_256},
+				{Type: TransformINTEG, ID: INTEG_HMAC_SHA2_256_128},
+				{Type: TransformDHRGroup, ID: DHGroup256BitECP},
+			},
+		}}},
+		LocalIP:    fake.localIP,
+		LocalPort:  fake.localPort,
+		RemoteIP:   fake.remoteIP,
+		RemotePort: fake.remotePort,
+	})
+	if err != nil {
+		t.Fatalf("RunIKE_SA_INIT() error = %v", err)
+	}
+	if len(res.PublicKeyI) != 64 || len(res.PublicKeyR) != 64 || len(res.SharedSecret) != 32 {
+		t.Fatalf("key lengths pubI=%d pubR=%d shared=%d", len(res.PublicKeyI), len(res.PublicKeyR), len(res.SharedSecret))
+	}
+	ke, err := ParseKeyExchange(fake.request.Payloads[1].Body)
+	if err != nil {
+		t.Fatalf("ParseKeyExchange() error = %v", err)
+	}
+	if ke.DHGroup != DHGroup256BitECP {
+		t.Fatalf("request DH group=%d, want %d", ke.DHGroup, DHGroup256BitECP)
+	}
 }
 
 func TestRunIKESAInitDerivesKeys(t *testing.T) {

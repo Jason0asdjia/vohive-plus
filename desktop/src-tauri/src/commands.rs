@@ -6,9 +6,16 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::backend_variants::{
+    by_id as backend_variant_by_id, default_variant_id, variants as backend_variants,
+    RESOURCE_VOHIVE_PLUS,
+};
+use crate::desktop_config;
 use crate::health::{check_health, WEB_URL};
 use crate::logs::RingLog;
-use crate::models::{ActionResult, BackendStatus, RuntimeStatus, UsbDevice};
+use crate::models::{
+    ActionResult, BackendStatus, BackendVariant, RuntimeStatus, SetBackendVariantRequest, UsbDevice,
+};
 use crate::process::{clean_output, hidden_command, run_output};
 use crate::{usbipd, wsl, AppState};
 
@@ -54,27 +61,42 @@ pub fn stop_wsl(state: State<'_, AppState>) -> ActionResult {
     match wsl::current_distro_running() {
         Ok(false) => action(true, "WSL 已是停止状态", Some(build_status(&state)), None),
         Ok(true) => match wsl::terminate_distro(Duration::from_secs(8)) {
-            Ok(out) if out.status.success() => {
-                action(true, "WSL 已停止，WSL 内后端也会随之退出", Some(build_status(&state)), None)
-            }
+            Ok(out) if out.status.success() => action(
+                true,
+                "WSL 已停止，WSL 内后端也会随之退出",
+                Some(build_status(&state)),
+                None,
+            ),
             Ok(out) => action(
                 false,
                 format!("停止 WSL 失败: {}", clean_output(&out.stderr)),
                 Some(build_status(&state)),
-                Some(format!("\"{}\" --terminate {}", wsl::executable(), wsl::DISTRO)),
+                Some(format!(
+                    "\"{}\" --terminate {}",
+                    wsl::executable(),
+                    wsl::DISTRO
+                )),
             ),
             Err(err) => action(
                 false,
                 format!("停止 WSL 失败: {err}"),
                 Some(build_status(&state)),
-                Some(format!("\"{}\" --terminate {}", wsl::executable(), wsl::DISTRO)),
+                Some(format!(
+                    "\"{}\" --terminate {}",
+                    wsl::executable(),
+                    wsl::DISTRO
+                )),
             ),
         },
         Err(err) => action(
             false,
             format!("检查 WSL 运行状态失败: {err}"),
             Some(build_status(&state)),
-            Some(format!("\"{}\" --terminate {}", wsl::executable(), wsl::DISTRO)),
+            Some(format!(
+                "\"{}\" --terminate {}",
+                wsl::executable(),
+                wsl::DISTRO
+            )),
         ),
     }
 }
@@ -87,7 +109,12 @@ pub fn attach_usb(state: State<'_, AppState>) -> ActionResult {
     };
     let devices = usbipd::list_devices(&path);
     let Some(target) = devices.iter().find(|d| d.is_target) else {
-        return action(false, "未发现 2ca3:4006 Baiwang 或 2c7c:* Quectel 模组", None, None);
+        return action(
+            false,
+            "未发现 2ca3:4006 Baiwang 或 2c7c:* Quectel 模组",
+            None,
+            None,
+        );
     };
 
     let step = usb_attach_step(target);
@@ -178,8 +205,93 @@ pub fn prepare_usb(state: State<'_, AppState>) -> ActionResult {
 }
 
 #[tauri::command]
+pub fn set_backend_variant(
+    app: AppHandle,
+    req: SetBackendVariantRequest,
+    state: State<'_, AppState>,
+) -> ActionResult {
+    let variant = match backend_variant_by_id(&req.variant_id) {
+        Some(variant) => variant,
+        None => {
+            return action(
+                false,
+                format!("未知后端运行体: {}", req.variant_id),
+                Some(build_status(&state)),
+                None,
+            )
+        }
+    };
+    if let Err(err) = desktop_config::save_selected_backend_variant(&app, &variant.id) {
+        return action(
+            false,
+            format!("保存后端运行体选择失败: {err}"),
+            Some(build_status(&state)),
+            None,
+        );
+    }
+    {
+        let mut selected = state
+            .selected_backend_variant
+            .lock()
+            .expect("backend variant mutex poisoned");
+        *selected = variant.id.clone();
+    }
+    state.logs.push(format!(
+        "已选择后端运行体: {} {}；停止并重新启动后端后生效",
+        variant.name, variant.version
+    ));
+    action(
+        true,
+        format!(
+            "已选择 {} {}，停止并重新启动后端后生效",
+            variant.name, variant.version
+        ),
+        Some(build_status(&state)),
+        None,
+    )
+}
+
+#[tauri::command]
 pub fn start_backend(app: AppHandle, state: State<'_, AppState>) -> ActionResult {
     if check_health().ok {
+        let selected = selected_backend_variant_from_app_state(&state);
+        match deployed_backend_variant_id() {
+            Ok(Some(deployed)) if deployed != selected => {
+                let selected_name = backend_variant_by_id(&selected)
+                    .map(|variant| format!("{} {}", variant.name, variant.version))
+                    .unwrap_or(selected);
+                let deployed_name = backend_variant_by_id(&deployed)
+                    .map(|variant| format!("{} {}", variant.name, variant.version))
+                    .unwrap_or(deployed);
+                return action(
+                    false,
+                    format!(
+                        "后端正在运行的是 {deployed_name}，当前选择是 {selected_name}；请先停止后端，再重新启动以切换运行体。"
+                    ),
+                    Some(build_status(&state)),
+                    None,
+                );
+            }
+            Ok(None) if selected != default_variant_id() => {
+                return action(
+                    false,
+                    "后端正在运行，但无法确认它是当前选择的备用运行体；请先停止后端，再重新启动以切换运行体。"
+                        .to_string(),
+                    Some(build_status(&state)),
+                    None,
+                );
+            }
+            Ok(_) => {}
+            Err(err) if selected != default_variant_id() => {
+                return action(
+                    false,
+                    format!("后端正在运行，但读取已部署运行体失败: {err}；请先停止后端，再重新启动以切换运行体。"),
+                    Some(build_status(&state)),
+                    None,
+                );
+            }
+            Err(_) => {}
+        }
         state.logs.push("后端健康检查正常，复用已有 WSL 进程");
         return action(true, "后端已在运行", Some(build_status(&state)), None);
     }
@@ -302,6 +414,8 @@ fn build_status(state: &State<'_, AppState>) -> RuntimeStatus {
         usbipd,
         devices,
         backend,
+        backend_variants: backend_variants(),
+        selected_backend_variant: selected_backend_variant(state),
         health,
     }
 }
@@ -378,27 +492,70 @@ fn install_or_import(app: &AppHandle, state: &State<'_, AppState>) -> Result<(),
         .path()
         .resource_dir()
         .map_err(|err| format!("读取资源目录失败: {err}"))?;
-    let bin = resource_dir.join("resources/vohive/vohive-open_linux_amd64");
+    let selected = selected_backend_variant_from_app_state(state);
+    let variant =
+        backend_variant_by_id(&selected).ok_or_else(|| format!("未知后端运行体: {selected}"))?;
+    let bin = resource_dir.join(format!("resources/vohive/{}", variant.resource_name));
+    let plus_bin = resource_dir.join(format!("resources/vohive/{}", RESOURCE_VOHIVE_PLUS));
     let cfg = resource_dir.join("resources/vohive/config.example.yaml");
     let script = resource_dir.join("resources/vohive/vohive-usb-prepare.sh");
-    validate_vohive_resources(&bin, &cfg, &script)?;
+    validate_vohive_resources(&variant, &bin, &plus_bin, &cfg, &script)?;
     let bin_wsl = wsl::sh_quote(&wsl::windows_path_to_wsl(&bin));
+    let plus_bin_wsl = wsl::sh_quote(&wsl::windows_path_to_wsl(&plus_bin));
     let cfg_wsl = wsl::sh_quote(&wsl::windows_path_to_wsl(&cfg));
     let script_wsl = wsl::sh_quote(&wsl::windows_path_to_wsl(&script));
-    let deploy = format!(
-        "mkdir -p /opt/vohive/bin /opt/vohive/config /opt/vohive/data /opt/vohive/logs && \
-         cp {bin_wsl} /opt/vohive/bin/vohive && \
-         cp {script_wsl} /opt/vohive/bin/vohive-usb-prepare.sh && \
-         if [ ! -f /opt/vohive/config/config.yaml ]; then cp {cfg_wsl} /opt/vohive/config/config.yaml; fi && \
-         chmod +x /opt/vohive/bin/vohive /opt/vohive/bin/vohive-usb-prepare.sh"
-    );
+    let deploy = backend_deploy_script(&variant.id, &bin_wsl, &plus_bin_wsl, &cfg_wsl, &script_wsl);
     match wsl::run_root_shell(&deploy) {
         Ok(out) if out.status.success() => {
-            state.logs.push("已部署 VoHive 资源到 WSL /opt/vohive");
+            state.logs.push(format!(
+                "已部署 {} {} 到 WSL /opt/vohive",
+                variant.name, variant.version
+            ));
             Ok(())
         }
         Ok(out) => Err(format!("部署 WSL 资源失败: {}", clean_output(&out.stderr))),
         Err(err) => Err(err.to_string()),
+    }
+}
+
+fn backend_deploy_script(
+    variant_id: &str,
+    bin_wsl: &str,
+    plus_bin_wsl: &str,
+    cfg_wsl: &str,
+    script_wsl: &str,
+) -> String {
+    let variant_id = wsl::sh_quote(variant_id);
+    format!(
+        "mkdir -p /opt/vohive/bin /opt/vohive/config /opt/vohive/data /opt/vohive/logs && \
+         cp {bin_wsl} /opt/vohive/bin/vohive && \
+         cp {plus_bin_wsl} /opt/vohive/bin/vohive-plus && \
+         cp {script_wsl} /opt/vohive/bin/vohive-usb-prepare.sh && \
+         if [ ! -f /opt/vohive/config/config.yaml ]; then cp {cfg_wsl} /opt/vohive/config/config.yaml; fi && \
+         printf '%s\\n' {variant_id} > /opt/vohive/config/desktop-backend-variant && \
+         chmod +x /opt/vohive/bin/vohive /opt/vohive/bin/vohive-plus /opt/vohive/bin/vohive-usb-prepare.sh"
+    )
+}
+
+fn deployed_backend_variant_id() -> Result<Option<String>, String> {
+    match wsl::current_distro_running() {
+        Ok(false) => return Ok(None),
+        Ok(true) => {}
+        Err(err) => return Err(err),
+    }
+    let out = wsl::run_root_shell_timeout(
+        "if [ -f /opt/vohive/config/desktop-backend-variant ]; then cat /opt/vohive/config/desktop-backend-variant; fi",
+        Duration::from_secs(3),
+    )
+    .map_err(|err| err.to_string())?;
+    if !out.status.success() {
+        return Err(clean_output(&out.stderr));
+    }
+    let variant = clean_output(&out.stdout).trim().to_string();
+    if variant.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(variant))
     }
 }
 
@@ -439,9 +596,16 @@ fn wsl_required_action_preflight(action_label: &str, wsl_running: bool) -> Resul
     ))
 }
 
-fn validate_vohive_resources(bin: &Path, cfg: &Path, script: &Path) -> Result<(), String> {
+fn validate_vohive_resources(
+    variant: &BackendVariant,
+    bin: &Path,
+    plus_bin: &Path,
+    cfg: &Path,
+    script: &Path,
+) -> Result<(), String> {
     let missing = [
-        ("vohive-open_linux_amd64", bin),
+        (variant.resource_name.as_str(), bin),
+        (RESOURCE_VOHIVE_PLUS, plus_bin),
         ("config.example.yaml", cfg),
         ("vohive-usb-prepare.sh", script),
     ]
@@ -454,6 +618,18 @@ fn validate_vohive_resources(bin: &Path, cfg: &Path, script: &Path) -> Result<()
     } else {
         Err(format!("桌面壳资源不完整，缺少: {}", missing.join(", ")))
     }
+}
+
+fn selected_backend_variant(state: &State<'_, AppState>) -> String {
+    selected_backend_variant_from_app_state(state)
+}
+
+fn selected_backend_variant_from_app_state(state: &AppState) -> String {
+    state
+        .selected_backend_variant
+        .lock()
+        .expect("backend variant mutex poisoned")
+        .clone()
 }
 
 fn ensure_wsl_running(state: &State<'_, AppState>) -> Result<u32, String> {
@@ -565,8 +741,11 @@ echo killed"#
 #[cfg(test)]
 mod tests {
     use super::{
-        backend_stop_script, external_backend_status, usb_attach_preflight, usb_attach_step,
-        validate_vohive_resources, wsl_required_action_preflight, UsbAttachStep,
+        backend_deploy_script, backend_stop_script, external_backend_status, usb_attach_preflight,
+        usb_attach_step, validate_vohive_resources, wsl_required_action_preflight, UsbAttachStep,
+    };
+    use crate::backend_variants::{
+        by_id as backend_variant_by_id, variants as backend_variants, VARIANT_ORSON,
     };
     use crate::models::UsbDevice;
     use std::fs;
@@ -659,16 +838,53 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("vohive-open_linux_amd64");
+        let plus_bin = dir.join("vohive-open_linux_amd64");
         let cfg = dir.join("config.example.yaml");
         let script = dir.join("vohive-usb-prepare.sh");
 
-        let err = validate_vohive_resources(&bin, &cfg, &script)
+        let variant = backend_variant_by_id(VARIANT_ORSON).unwrap();
+        let err = validate_vohive_resources(&variant, &bin, &plus_bin, &cfg, &script)
             .expect_err("missing resources must fail");
 
         let _ = fs::remove_dir_all(&dir);
         assert!(err.contains("桌面壳资源不完整"));
-        assert!(err.contains("vohive-open_linux_amd64"));
+        assert!(err.contains("vohive-orson-v1.5.5_linux_amd64"));
         assert!(err.contains("config.example.yaml"));
         assert!(err.contains("vohive-usb-prepare.sh"));
+    }
+
+    #[test]
+    fn backend_deploy_script_installs_selected_runtime_and_keeps_plus_helper() {
+        let script = backend_deploy_script(
+            VARIANT_ORSON,
+            "'/mnt/f/desktop/resources/vohive/vohive-orson-v1.5.5_linux_amd64'",
+            "'/mnt/f/desktop/resources/vohive/vohive-open_linux_amd64'",
+            "'/mnt/f/desktop/resources/vohive/config.example.yaml'",
+            "'/mnt/f/desktop/resources/vohive/vohive-usb-prepare.sh'",
+        );
+
+        assert!(script.contains(
+            "cp '/mnt/f/desktop/resources/vohive/vohive-orson-v1.5.5_linux_amd64' /opt/vohive/bin/vohive"
+        ));
+        assert!(script.contains(
+            "cp '/mnt/f/desktop/resources/vohive/vohive-open_linux_amd64' /opt/vohive/bin/vohive-plus"
+        ));
+        assert!(script.contains(
+            "printf '%s\\n' 'orson-vohive-155' > /opt/vohive/config/desktop-backend-variant"
+        ));
+    }
+
+    #[test]
+    fn backend_variants_include_default_and_orson_fallback() {
+        let variants = backend_variants();
+
+        assert!(variants.iter().any(|variant| {
+            variant.id == "vohive-plus" && variant.resource_name == "vohive-open_linux_amd64"
+        }));
+        assert!(variants.iter().any(|variant| {
+            variant.id == VARIANT_ORSON
+                && variant.resource_name == "vohive-orson-v1.5.5_linux_amd64"
+                && variant.description.contains("备用诊断后端")
+        }));
     }
 }

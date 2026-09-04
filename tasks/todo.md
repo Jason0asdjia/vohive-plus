@@ -979,3 +979,140 @@
 - [x] 2026-08-28 阶段 6O 验证：`go test ./internal/device ./internal/api -count=1` 通过；`cargo test --manifest-path desktop/src-tauri/Cargo.toml` 28 项通过；`npm run test --prefix web` 31 项通过；`node --test tests/*.test.mjs desktop/tests/*.test.mjs` 22 项通过。
 - [x] 2026-08-28 阶段 6O 构建：`npm run build --prefix web` 通过，已同步 `web/dist` 到 `internal/web/dist`；Linux amd64 后端 `dist/vohive-open_linux_amd64` SHA256 为 `319D6A60F55F23EBBEFCDB0849DEFAECC33E0C1EA2B3EE7613F9EFCC51B978B6`；桌面 release exe SHA256 为 `232518B9843419062E0C3C11CC25F0B56296C9C0B52FFBD7BC73A8516E9FD075`。
 - [x] 2026-08-28 阶段 6O 提交准备：按语义化版本规则升级到 `1.0.5`，源码、测试、文档、发布说明和本地构建验证已准备完成；推送 `main` 后由 Release workflow 发布。
+
+## 阶段 6P：VoWiFi 国家前置代理命中后仍直连 ePDG
+
+### 根因调查
+
+- [x] 2026-09-03 当前 WSL 运行后端中，`uk` 前置代理保存为 `127.0.0.1:10808`，后端自检 `SOCKS5 UDP Associate` 通过。
+- [x] 2026-09-03 当前 SIM IMSI 为 `23415...`，SIM 归属 MCC 为 `234`，国家规则 `GB -> uk` 已启用，日志已出现 `VoWiFi 国家前置代理已命中`。
+- [x] 2026-09-03 失败日志仍为 `read udp 192.168.0.123:xxxxx->ePDG:4500: i/o timeout`；源码确认 `TunnelConfig.Proxy` 只被传入 SWU 配置，`IKEPacketTunnelManager` 的 IKE/ESP transport 仍直接使用 `net.Dialer.DialContext(ctx, "udp", remote)`，代理没有实际接管数据面。
+
+### 实施步骤
+
+- [x] RED：补充 SWU 单测，要求启用 `TunnelConfig.Proxy` 后 IKE transport 和 ESP transport 都通过 SOCKS5 UDP relay，而不是直连 ePDG；旧实现复现为 `read udp 192.168.0.123:xxxxx->203.0.113.9:4500: i/o timeout`。
+- [x] GREEN：实现 SOCKS5 UDP Associate transport，并在 `IKEPacketTunnelManager` 命中代理时使用它；未配置代理时保持原直连逻辑。
+- [x] GREEN：代理 transport 的 TCP 握手、用户名密码鉴权、UDP Associate、UDP frame 编解码和关闭逻辑均在 SWU 层内聚处理。
+- [x] VERIFY：运行 `go test ./third_party/vowifi-go/engine/swu -run "TestIKEPacketTunnelManagerUsesSOCKS5UDPProxy" -count=1`，通过。
+- [x] VERIFY：运行 `go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1`，通过。
+- [x] DEPLOY：重新编译 Linux 后端 `dist/vohive-open_linux_amd64`，SHA256 为 `6fe6fc0778df5da4982f912902572ff6818101fbc2430e054a86591863aca209`；已备份旧 WSL 后端到 `/opt/vohive/bin/vohive.bak-20260903171220`，覆盖 `/opt/vohive/bin/vohive` 并重启。
+
+### 评审记录
+
+- 2026-09-03 阶段 6P 部署验证：WSL `/ping` 返回 `pong`，新后端进程 PID 为 `15003`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-03T09:10:45Z`。
+- 2026-09-03 部署后实机重试：日志从旧的 `read udp 192.168.0.123:xxxxx->ePDG:4500` 变为 `read udp 127.0.0.1:47536->127.0.0.1:60281`，说明 SWU 已改走 SOCKS5 UDP relay，不再直连 ePDG。
+- 2026-09-03 剩余风险：新的超时发生在 v2rayN 返回的本地 UDP relay 上；后续需验证 WSL mirrored 对 Windows 动态 UDP loopback relay 的转发能力，或改用 `hostAddressLoopback=true` 后通过 Windows IPv4 地址访问 v2rayN，再判断远端节点是否真正转发 UDP 4500。
+- 2026-09-03/04 `hostAddressLoopback=true` 已确认必须放在 `.wslconfig` 的 `[experimental]` 下；重启 WSL 后，WSL 内通过 `127.0.0.1:10808` 跑 SOCKS5 UDP live DNS 测试可收到响应，说明 WSL 到 v2rayN 的 UDP relay 数据面已打通。`192.168.0.123:10808` 入口当前会 `connection refused`，不要把它作为稳定配置。
+- 2026-09-03 实机继续启用 VoWiFi 仍在 SWU 阶段超时，但失败后发现模块停在 `AT+CFUN: 4`、`CREG/CEREG/CGREG=0`、`QNWINFO=No Service`；根因是启动失败恢复只在需要恢复数据网络时才执行 `SetOperatingMode(Online)`，数据网络关闭时会把射频留在飞行模式。
+- 2026-09-03 已补 RED 测试 `TestHandleVoWiFiStartupErrorRestoresRadioWithoutDataRestoreIntent`，并将失败恢复拆分为“总是恢复射频”和“按需恢复数据连接”；目标测试与 `go test ./internal/device ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost -count=1` 已通过。
+
+## 阶段 6Q：VOXI/Vodafone UK VoWiFi IKE 行为对齐
+
+### 根因调查
+
+- [x] 2026-09-04 用户重启 v2rayN 后，WSL 内通过 `127.0.0.1:10808` 对 `1.1.1.1:53`、`8.8.8.8:53`、`208.67.222.222:53` 的 SOCKS5 UDP DNS live 测试均通过，说明当前普通 UDP relay 已恢复。
+- [x] 2026-09-04 WSL 内通过同一 `127.0.0.1:10808` 查询出口，结果为 `45.154.205.76 / GB / London / AS136258 BrainStorm Network`，说明当前 TCP 出口地理国家为英国。
+- [x] 2026-09-04 `epdg.epc.mnc015.mcc234.pub.3gppnetwork.org` 解析到 `148.252.188.96`、`88.82.11.221`、`88.82.11.208`，与 LOWERTOP/Shadowrocket-First 的 UK WiFi Calling 规则中 Vodafone IP 段方向一致。
+- [x] 2026-09-04 同一代理下测试 Vodafone ePDG `88.82.11.221:4500`、`88.82.11.208:4500`、`148.252.188.96:4500` 与 `88.82.11.221:500`，当前自造 IKE_SA_INIT 均为超时。
+- [x] 2026-09-04 对 `88.82.11.221:4500` 连续 6 次 IKE_SA_INIT 探针，6 次均超时，未复现“多次后偶发成功”。
+- [x] 2026-09-04 参考 Shadowrocket UK 规则的价值已确认：它证明手机代理场景需要代理 UDP 500/4500、Vodafone/VOXI 相关域名和 IP 段；但它是手机分流规则，不包含 ePDG/IKE 报文参数，不能直接解释当前 IKE_INIT 无响应。
+- [x] 当前 VoHive 启动时序与朋友 iPhone 成功路径不同：VoHive 先在蜂窝已驻网状态读取身份，然后断开数据连接并切 `CFUN=4`，默认等待约 `500ms` 后发起 SWU；朋友路径是手机先飞行模式，再通过代理 WiFi 发起 WiFi Calling。
+- [ ] 需要进一步验证：启动前“预飞行/等待蜂窝完全脱网”的时序是否影响 Vodafone ePDG 对首包 IKE_INIT 的响应；虽然 IKE_SA_INIT 阶段尚未携带 IMSI/EAP 身份，但本地模组、SIM 应用状态、NAT-D 地址和源端口行为可能与手机路径不同。
+
+### 可选方案
+
+- 推荐方案 A：增加 VoWiFi SWU 启动诊断重试。
+  - 对每个 ePDG 候选 IP 做可配置次数的 IKE_SA_INIT 重试和短退避，记录每次目标 IP、端口、DH group、是否使用 Non-ESP marker、代理 relay、本地端口和错误。
+  - 优点：直接覆盖“朋友多次才成功”的现实特征，也能收集更完整证据。
+  - 风险：如果 IKE 报文本身不对，重试只会更慢，不能根治。
+- 备选方案 B：增加“飞行优先启动”实验开关。
+  - 在正式 SWU 前先切 `CFUN=4`，轮询 `CREG/CEREG/CGREG` 到未注册或超时，再发起 IKE；失败后总是恢复射频。
+  - 优点：更接近 iPhone 的先飞行模式路径。
+  - 风险：会增加启动耗时，且如果问题在 IKE proposal/Vendor ID，仍不会成功。
+- 备选方案 C：扩展 IKE_SA_INIT 报文兼容性。
+  - 支持一次请求内多 proposal、更多 DH group/算法组合、Vendor ID/NAT-T 行为开关，并用 live 探针逐项验证。
+  - 优点：更接近真正根因方向。
+  - 风险：没有 iPhone 抓包对照时容易盲试，需要严格按测试和日志收敛。
+
+### 推荐设计
+
+- [ ] 先做方案 A + B 的最小可控实现：默认行为保持现状，只新增实验配置或调试参数，不影响普通用户。
+- [ ] `IKEPacketTunnelManager` 支持对候选 ePDG 的多轮重试，错误信息聚合到最后失败原因中。
+- [ ] VoWiFi 启动准备层增加可选“飞行预热等待”，在切 `CFUN=4` 后等待注册状态退出蜂窝，再开始 SWU。
+- [ ] Web/桌面日志展示中保留每次尝试摘要，避免用户只看到最后一个 `i/o timeout`。
+- [ ] 若 A/B 仍不响应，再进入方案 C：优先找 iPhone 成功抓包对照；没有抓包时只把 proposal/Vendor ID 做成诊断实验，不直接替换生产默认。
+
+### 验证标准
+
+- [ ] 单测先复现：默认只尝试每个候选一次；开启重试后应按候选和次数调用 InitRunner，并保留最后错误。
+- [ ] 单测先复现：开启飞行预热后应等待注册状态脱网或超时，且失败路径必须恢复射频。
+- [ ] live 验证：同一 `127.0.0.1:10808` 代理下记录 DNS UDP、出口国家、三个 ePDG IP、多次 IKE 尝试结果。
+- [ ] 实机验证：启动失败后不再停留在 `CFUN=4`/未驻网，成功或失败都能从 UI 看出真实尝试次数和最后失败层级。
+
+## 阶段 6R：Orson-Yan/Vohive-155 二进制 A/B 对照验证
+
+### 根因调查
+
+- [x] `Orson-Yan/Vohive-155` 是二进制发布仓库，`release/` 内含 `vohive_v1.5.5-10-gf9eb85d_linux_amd64`，不是完整源码仓库。
+- [x] 已下载 Linux amd64 二进制到 `.tmp/vohive_orson_linux_amd64`，SHA256 为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] Orson 二进制支持 `-c` 和 `-backend-only`，但不支持本项目新增的 `-prepare-usb`，不能作为完整 Windows 桌面后端替换。
+- [x] 二进制字符串检查未发现 `upstream-proxy`、国家规则或 `SOCKS5 UDP` 数据面相关能力；若用 Orson 验证 WiFi Calling，必须确保 WSL 整体 UDP 500/4500 出口由 v2rayN/TUN/系统路由接管，否则与本项目的前置代理路径不可比。
+
+### 实施步骤
+
+- [x] 不覆盖 `/opt/vohive` 正式后端；创建 `/opt/vohive-orson` 独立目录。
+- [x] 停止当前 `/opt/vohive/bin/vohive`，避免两个后端同时抢占 USB/AT/QMI。
+- [x] 复制 Orson Linux amd64 二进制到 `/opt/vohive-orson/bin/vohive`。
+- [x] 复制当前配置到 `/opt/vohive-orson/config/config.yaml`，只改监听端口为 `:17575`。
+- [x] 启动 Orson 后端并验证 `http://127.0.0.1:17575/ping`。
+- [x] 通过 Orson API 触发 `PATCH /api/devices/wwan0/vowifi`，记录成功/失败和日志。
+
+### 验证标准
+
+- [x] Orson 后端与本项目后端不能同时运行。
+- [x] Orson Web 能打开，默认账号密码 `admin/admin` 可登录。
+- [x] 设备能被 Orson 后端识别并控制。
+- [x] 若 Orson 能拉起 WiFi Calling，需要记录当时的网络出口、v2rayN 模式、ePDG 目标和日志，作为回到本项目修复 IKE/SWU 的证据。
+- [ ] 若 Orson 失败，需要确认它是否实际走 UK 代理/UDP 500/4500；否则不能把失败归因于 SIM 或运营商。
+
+### 评审记录
+
+- [x] 2026-09-04 WSL TUN 出口验证：`curl https://ipinfo.io/json` 返回 `45.154.205.76 / GB / London / AS136258 BrainStorm Network`；USB `2ca3:4006 Baiwang` 在 `usbipd` 中为 `Attached`，WSL 内 `lsusb` 可见。
+- [x] 2026-09-04 Orson 对照后端启动：独立运行于 `/opt/vohive-orson`，监听 `:17575`，`/ping` 返回 `pong`，默认 `admin/admin` 登录成功，设备 `wwan0` online。
+- [x] 2026-09-04 Orson VoWiFi 实机结果：`PATCH /api/devices/wwan0/vowifi` 返回成功，运行态 `phase=sms_ready`、`tunnel_ready=true`、`ims_ready=true`、`sms_ready=true`。
+- [x] 2026-09-04 Orson 成功日志关键差异：ePDG 对首轮 IKE 返回 `preferred_group=2`，Orson 重新发起 SA_INIT，并回落到 `sha1_legacy` / `MODP_1024`；随后 EAP-AKA、Child SA、IMS REGISTER 成功。该证据强烈指向本项目当前 IKE/SWU 报文兼容性问题，而不是 SIM、节点或运营商不可用。
+
+## 阶段 6S：桌面壳支持备用 Orson 后端部署
+
+### 设计
+
+- [ ] 桌面壳默认仍部署本项目后端 `vohive-open_linux_amd64`，新增 `Orson/Vohive-155 v1.5.5` 备用后端选项。
+- [ ] 备用后端只作为诊断和回退运行体，不能替代本项目的 `vohive-usb-prepare.sh`；WSL USB 准备仍使用本项目脚本。
+- [x] 选择项保存到桌面壳本地配置文件；用户下次打开仍保留上次选择，无效旧配置自动回退本项目默认后端。
+- [ ] UI 必须显示当前选择和差异提示：备用后端可用于 WiFi Calling 对照，但不包含本项目新增的 WSL USB prepare 参数和 SOCKS5 UDP 前置代理能力。
+
+### 实施计划
+
+- [x] RED：新增桌面资源同步测试，要求脚本能同步主后端和 Orson 备用后端。
+- [x] GREEN：扩展 `desktop/scripts/sync-backend-resource.mjs`，同步 `vohive-open_linux_amd64` 和 `vohive-orson-v1.5.5_linux_amd64`。
+- [x] RED：新增 Rust 单测，要求资源校验能按 variant 选择对应二进制，且提示缺失的备用资源名。
+- [x] GREEN：新增 `BackendVariant` 模型和选择命令，`install_or_import` 根据选中的 variant 部署对应二进制。
+- [x] RED：新增桌面 UI/service 测试，要求界面暴露备用后端选择能力。
+- [x] GREEN：更新 `desktop/src/App.vue`、`desktop/src/services/runtime.ts`、`desktop/src/types/runtime.ts`，支持选择备用后端并在后端面板展示说明。
+- [x] GREEN：新增桌面本地配置读写，`set_backend_variant` 保存选择，桌面启动时读取并校验已保存的运行体。
+- [x] GREEN：部署时额外复制本项目后端到 `/opt/vohive/bin/vohive-plus`，并让 `vohive-usb-prepare.sh` 固定调用它，避免 Orson 备用后端缺少 `--prepare-usb` 破坏 USB 准备。
+- [x] GREEN：Release workflow 显式下载 `Orson-Yan/Vohive-155` 的 Linux amd64 备用后端资源并打入桌面便携包。
+- [x] GREEN：Release workflow 对 Orson 备用后端执行 SHA256 强校验，期望值为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] GREEN：WSL 部署时写入 `/opt/vohive/config/desktop-backend-variant`；后端健康但已部署运行体与当前选择不一致时，启动按钮提示先停止再启动，不再复用旧进程。
+- [x] GREEN：主后端下拉版本从 Rust crate 版本读取，避免后续发版时继续显示旧版本号。
+- [x] VERIFY：运行桌面 Node 测试和 Rust 测试。
+- [x] VERIFY：重新同步桌面资源，确认两个 Linux 后端二进制都存在于 `desktop/src-tauri/resources/vohive/`。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`node --test desktop\tests\syncBackendResource.test.mjs` 先失败于同步脚本不支持 Orson 备用后端；`node --test desktop\tests\wslStartUi.test.mjs` 先失败于 UI/service 没有后端选择入口。
+- [x] 2026-09-04 VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs` 17 项通过。
+- [x] 2026-09-04 VERIFY：`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 29 项通过。
+- [x] 2026-09-04 VERIFY：`pnpm --dir desktop build` 通过。
+- [x] 2026-09-04 资源同步：`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-orson-v1.5.5_linux_amd64` 均已由同步脚本生成；两个大二进制继续由 `.gitignore` 排除，发布包由 CI/构建脚本生成。
+- [x] 2026-09-04 代码审查跟进：修复运行体选择持久化、Release 下载 SHA256 校验、主后端版本硬编码、健康检查误复用旧运行体；本地开发构建仍允许 Orson 资源下载失败后跳过，官方 release workflow 负责强制打包和校验备用资源。
