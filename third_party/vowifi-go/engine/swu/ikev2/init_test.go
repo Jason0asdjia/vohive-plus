@@ -128,6 +128,49 @@ func TestRunIKESAInitSupportsECP256(t *testing.T) {
 	}
 }
 
+func TestRunIKESAInitRetriesWithPreferredDHGroupFromInvalidKE(t *testing.T) {
+	const preferredGroup = 2
+
+	nonceI := bytes.Repeat([]byte{0xa1}, 32)
+	nonceR := bytes.Repeat([]byte{0xb2}, 32)
+	transport := &invalidKERetryTransport{
+		t:            t,
+		preferred:    preferredGroup,
+		responderSPI: 0x1112131415161718,
+		nonceR:       nonceR,
+		remoteIP:     net.ParseIP("192.0.2.20"),
+		remotePort:   500,
+		localIP:      net.ParseIP("192.0.2.10"),
+		localPort:    500,
+	}
+	res, err := RunIKE_SA_INIT(context.Background(), InitConfig{
+		Transport:    transport,
+		InitiatorSPI: 0x0102030405060708,
+		NonceI:       nonceI,
+		LocalIP:      transport.localIP,
+		LocalPort:    transport.localPort,
+		RemoteIP:     transport.remoteIP,
+		RemotePort:   transport.remotePort,
+	})
+	if err != nil {
+		t.Fatalf("RunIKE_SA_INIT() error = %v", err)
+	}
+	if len(transport.requests) != 2 {
+		t.Fatalf("requests=%d, want 2", len(transport.requests))
+	}
+	firstKE := mustRequestKE(t, transport.requests[0])
+	if firstKE.DHGroup == preferredGroup {
+		t.Fatalf("first request unexpectedly used preferred group %d", preferredGroup)
+	}
+	secondKE := mustRequestKE(t, transport.requests[1])
+	if secondKE.DHGroup != preferredGroup {
+		t.Fatalf("second request DH group=%d, want %d", secondKE.DHGroup, preferredGroup)
+	}
+	if !hasIKEProposal(res.SelectedSA, PRF_HMAC_SHA1, INTEG_HMAC_SHA1_96, preferredGroup) || res.PRF != crypto.SHA1 {
+		t.Fatalf("selected SA=%+v PRF=%v, want MODP1024/SHA1", res.SelectedSA, res.PRF)
+	}
+}
+
 func TestRunIKESAInitDerivesKeys(t *testing.T) {
 	initiatorKey := bytes.Repeat([]byte{0x11}, 32)
 	responderKey := bytes.Repeat([]byte{0x22}, 32)
@@ -148,6 +191,7 @@ func TestRunIKESAInitDerivesKeys(t *testing.T) {
 		InitiatorSPI:     0x0102030405060708,
 		NonceI:           nonceI,
 		X25519PrivateKey: initiatorKey,
+		SA:               curve25519Proposal(),
 		LocalIP:          fake.localIP,
 		LocalPort:        fake.localPort,
 		RemoteIP:         fake.remoteIP,
@@ -220,6 +264,7 @@ func TestRunIKESAInitRejectsMissingNonce(t *testing.T) {
 		InitiatorSPI:     1,
 		NonceI:           bytes.Repeat([]byte{0x01}, 32),
 		X25519PrivateKey: bytes.Repeat([]byte{0x02}, 32),
+		SA:               curve25519Proposal(),
 	})
 	if !errors.Is(err, ErrInvalidInitResponse) {
 		t.Fatalf("RunIKE_SA_INIT() err=%v, want ErrInvalidInitResponse", err)
@@ -278,4 +323,121 @@ func countPayloadType(payloads []Payload, payloadType uint8) int {
 		}
 	}
 	return count
+}
+
+type invalidKERetryTransport struct {
+	t            *testing.T
+	preferred    uint16
+	responderSPI uint64
+	nonceR       []byte
+	remoteIP     net.IP
+	remotePort   uint16
+	localIP      net.IP
+	localPort    uint16
+	requests     []Message
+}
+
+func (f *invalidKERetryTransport) ExchangeIKE(ctx context.Context, request []byte) ([]byte, error) {
+	f.t.Helper()
+	req, err := ParseMessage(request)
+	if err != nil {
+		return nil, err
+	}
+	f.requests = append(f.requests, req)
+	if len(f.requests) == 1 {
+		notify, err := NotifyPayload(Notify{
+			NotifyType:       NotifyInvalidKEPayload,
+			NotificationData: []byte{byte(f.preferred >> 8), byte(f.preferred)},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return (Message{
+			Header: Header{
+				InitiatorSPI: req.Header.InitiatorSPI,
+				ExchangeType: ExchangeIKE_SA_INIT,
+				Flags:        FlagResponse,
+			},
+			Payloads: []Payload{notify},
+		}).MarshalBinary()
+	}
+	ke := mustRequestKE(f.t, req)
+	if ke.DHGroup != f.preferred {
+		f.t.Fatalf("retry request DH group=%d, want %d", ke.DHGroup, f.preferred)
+	}
+	privR, pubR, err := initKeyExchange(f.preferred, nil, bytes.NewReader(bytes.Repeat([]byte{0x32}, 512)))
+	if err != nil {
+		return nil, err
+	}
+	_ = privR
+	payloads := []Payload{
+		mustSecurityAssociationPayload(f.t, legacySHA1Proposal(f.preferred)),
+		KeyExchangePayload(f.preferred, pubR),
+		NoncePayload(f.nonceR),
+	}
+	src, err := NATDetectionNotify(NotifyNATDetectionSourceIP, req.Header.InitiatorSPI, f.responderSPI, f.remoteIP, f.remotePort)
+	if err != nil {
+		return nil, err
+	}
+	dst, err := NATDetectionNotify(NotifyNATDetectionDestinationIP, req.Header.InitiatorSPI, f.responderSPI, f.localIP, f.localPort)
+	if err != nil {
+		return nil, err
+	}
+	payloads = append(payloads, src, dst)
+	return (Message{
+		Header: Header{
+			InitiatorSPI: req.Header.InitiatorSPI,
+			ResponderSPI: f.responderSPI,
+			ExchangeType: ExchangeIKE_SA_INIT,
+			Flags:        FlagResponse,
+		},
+		Payloads: payloads,
+	}).MarshalBinary()
+}
+
+func mustRequestKE(t *testing.T, req Message) KeyExchange {
+	t.Helper()
+	if len(req.Payloads) < 2 || req.Payloads[1].Type != PayloadKE {
+		t.Fatalf("request payloads=%+v", req.Payloads)
+	}
+	ke, err := ParseKeyExchange(req.Payloads[1].Body)
+	if err != nil {
+		t.Fatalf("ParseKeyExchange() error = %v", err)
+	}
+	return ke
+}
+
+func mustSecurityAssociationPayload(t *testing.T, sa SecurityAssociation) Payload {
+	t.Helper()
+	payload, err := SecurityAssociationPayload(sa)
+	if err != nil {
+		t.Fatalf("SecurityAssociationPayload() error = %v", err)
+	}
+	return payload
+}
+
+func legacySHA1Proposal(group uint16) SecurityAssociation {
+	return SecurityAssociation{Proposals: []Proposal{{
+		Number:     1,
+		ProtocolID: ProtocolIKE,
+		Transforms: []Transform{
+			{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
+			{Type: TransformPRF, ID: PRF_HMAC_SHA1},
+			{Type: TransformINTEG, ID: INTEG_HMAC_SHA1_96},
+			{Type: TransformDHRGroup, ID: group},
+		},
+	}}}
+}
+
+func curve25519Proposal() SecurityAssociation {
+	return SecurityAssociation{Proposals: []Proposal{{
+		Number:     1,
+		ProtocolID: ProtocolIKE,
+		Transforms: []Transform{
+			{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
+			{Type: TransformPRF, ID: PRF_HMAC_SHA2_256},
+			{Type: TransformINTEG, ID: INTEG_HMAC_SHA2_256_128},
+			{Type: TransformDHRGroup, ID: DHGroupCurve25519},
+		},
+	}}}
 }

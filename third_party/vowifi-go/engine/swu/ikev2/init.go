@@ -120,6 +120,27 @@ type InitResult struct {
 }
 
 func RunIKE_SA_INIT(ctx context.Context, cfg InitConfig) (InitResult, error) {
+	res, err := runIKE_SA_INITOnce(ctx, cfg)
+	if err == nil {
+		return res, nil
+	}
+	var invalidKE *InvalidKEPayloadError
+	if !errors.As(err, &invalidKE) {
+		return InitResult{}, err
+	}
+	retrySA, ok := retryIKEProposalForPreferredDH(invalidKE.PreferredGroup)
+	if !ok {
+		return InitResult{}, err
+	}
+	retryCfg := cfg
+	retryCfg.SA = retrySA
+	if invalidKE.PreferredGroup != DHGroupCurve25519 {
+		retryCfg.X25519PrivateKey = nil
+	}
+	return runIKE_SA_INITOnce(ctx, retryCfg)
+}
+
+func runIKE_SA_INITOnce(ctx context.Context, cfg InitConfig) (InitResult, error) {
 	if cfg.Transport == nil {
 		return InitResult{}, fmt.Errorf("%w: transport is nil", ErrInvalidInitConfig)
 	}
@@ -252,9 +273,6 @@ func parseInitResponse(resp Message, spiI uint64) (parsedInitResponse, error) {
 	if h.InitiatorSPI != spiI {
 		return parsedInitResponse{}, fmt.Errorf("%w: initiator SPI mismatch", ErrInvalidInitResponse)
 	}
-	if h.ResponderSPI == 0 {
-		return parsedInitResponse{}, fmt.Errorf("%w: responder SPI is zero", ErrInvalidInitResponse)
-	}
 	if h.ExchangeType != ExchangeIKE_SA_INIT || h.MessageID != 0 || h.Flags&FlagResponse == 0 {
 		return parsedInitResponse{}, fmt.Errorf("%w: unexpected header", ErrInvalidInitResponse)
 	}
@@ -281,10 +299,21 @@ func parseInitResponse(resp Message, spiI uint64) (parsedInitResponse, error) {
 				return parsedInitResponse{}, err
 			}
 			out.notifies = append(out.notifies, n)
+			if n.NotifyType == NotifyInvalidKEPayload {
+				if len(n.NotificationData) < 2 {
+					return parsedInitResponse{}, fmt.Errorf("%w: INVALID_KE_PAYLOAD missing preferred group", ErrInvalidInitResponse)
+				}
+				return parsedInitResponse{}, &InvalidKEPayloadError{
+					PreferredGroup: binary.BigEndian.Uint16(n.NotificationData[:2]),
+				}
+			}
 			if n.NotifyType == NotifyMOBIKESupported {
 				out.mobikeSupported = true
 			}
 		}
+	}
+	if h.ResponderSPI == 0 {
+		return parsedInitResponse{}, fmt.Errorf("%w: responder SPI is zero", ErrInvalidInitResponse)
 	}
 	if len(out.sa.Proposals) == 0 {
 		return parsedInitResponse{}, fmt.Errorf("%w: missing SA", ErrInvalidInitResponse)
@@ -296,6 +325,43 @@ func parseInitResponse(resp Message, spiI uint64) (parsedInitResponse, error) {
 		return parsedInitResponse{}, fmt.Errorf("%w: missing nonce", ErrInvalidInitResponse)
 	}
 	return out, nil
+}
+
+type InvalidKEPayloadError struct {
+	PreferredGroup uint16
+}
+
+func (e *InvalidKEPayloadError) Error() string {
+	return fmt.Sprintf("invalid KE payload: responder prefers DH group %d", e.PreferredGroup)
+}
+
+func retryIKEProposalForPreferredDH(group uint16) (SecurityAssociation, bool) {
+	switch group {
+	case DHGroup1024BitMODP, DHGroup1536BitMODP:
+		return SecurityAssociation{Proposals: []Proposal{{
+			Number:     1,
+			ProtocolID: ProtocolIKE,
+			Transforms: []Transform{
+				{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
+				{Type: TransformPRF, ID: PRF_HMAC_SHA1},
+				{Type: TransformINTEG, ID: INTEG_HMAC_SHA1_96},
+				{Type: TransformDHRGroup, ID: group},
+			},
+		}}}, true
+	case DHGroup2048BitMODP, DHGroup256BitECP, DHGroup384BitECP, DHGroup521BitECP, DHGroupCurve25519:
+		return SecurityAssociation{Proposals: []Proposal{{
+			Number:     1,
+			ProtocolID: ProtocolIKE,
+			Transforms: []Transform{
+				{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
+				{Type: TransformPRF, ID: PRF_HMAC_SHA2_256},
+				{Type: TransformINTEG, ID: INTEG_HMAC_SHA2_256_128},
+				{Type: TransformDHRGroup, ID: group},
+			},
+		}}}, true
+	default:
+		return SecurityAssociation{}, false
+	}
 }
 
 func initNATPayloads(cfg InitConfig, spiI, spiR uint64) []Payload {
@@ -397,11 +463,10 @@ func (k modpInitPrivateKey) sharedSecret(peerKeyData []byte) ([]byte, error) {
 }
 
 func initKeyExchange(group uint16, rawX25519 []byte, random io.Reader) (ikeInitPrivateKey, []byte, error) {
-	if group == DHGroup2048BitMODP {
+	if p := modpPrimeForGroup(group); p != nil {
 		if len(rawX25519) > 0 {
 			return nil, nil, fmt.Errorf("%w: raw private key is only supported for Curve25519", ErrInvalidInitConfig)
 		}
-		p := modp2048Prime()
 		size := (p.BitLen() + 7) / 8
 		max := new(big.Int).Sub(p, big.NewInt(3))
 		x, err := crand.Int(random, max)
@@ -455,6 +520,47 @@ func ikePublicKey(group uint16, keyData []byte) (*ecdh.PublicKey, error) {
 	default:
 		return nil, fmt.Errorf("%w: unsupported DH group %d", ErrInvalidInitConfig, group)
 	}
+}
+
+func modpPrimeForGroup(group uint16) *big.Int {
+	switch group {
+	case DHGroup1024BitMODP:
+		return modp1024Prime()
+	case DHGroup1536BitMODP:
+		return modp1536Prime()
+	case DHGroup2048BitMODP:
+		return modp2048Prime()
+	default:
+		return nil
+	}
+}
+
+func modp1024Prime() *big.Int {
+	p, _ := new(big.Int).SetString(
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+			"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+			"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+			"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
+			"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381"+
+			"FFFFFFFFFFFFFFFF",
+		16,
+	)
+	return p
+}
+
+func modp1536Prime() *big.Int {
+	p, _ := new(big.Int).SetString(
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+			"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+			"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+			"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
+			"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3D"+
+			"C2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F"+
+			"83655D23DCA3AD961C62F356208552BB9ED529077096966D"+
+			"670C354E4ABC9804F1746C08CA237327FFFFFFFFFFFFFFFF",
+		16,
+	)
+	return p
 }
 
 func ikePublicKeyData(group uint16, public []byte) ([]byte, error) {

@@ -68,16 +68,25 @@ type SecurityAssociation struct {
 }
 
 func DefaultIKEProposal() SecurityAssociation {
-	return SecurityAssociation{Proposals: []Proposal{{
-		Number:     1,
+	return SecurityAssociation{Proposals: []Proposal{
+		ikeProposal(1, PRF_HMAC_SHA2_256, INTEG_HMAC_SHA2_256_128, DHGroup2048BitMODP),
+		ikeProposal(2, PRF_HMAC_SHA1, INTEG_HMAC_SHA1_96, DHGroup1024BitMODP),
+		ikeProposal(3, PRF_HMAC_SHA1, INTEG_HMAC_SHA1_96, DHGroup1536BitMODP),
+		ikeProposal(4, PRF_HMAC_SHA2_256, INTEG_HMAC_SHA2_256_128, DHGroupCurve25519),
+	}}
+}
+
+func ikeProposal(number uint8, prfID, integID, dhID uint16) Proposal {
+	return Proposal{
+		Number:     number,
 		ProtocolID: ProtocolIKE,
 		Transforms: []Transform{
 			{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
-			{Type: TransformPRF, ID: PRF_HMAC_SHA2_256},
-			{Type: TransformINTEG, ID: INTEG_HMAC_SHA2_256_128},
-			{Type: TransformDHRGroup, ID: DHGroupCurve25519},
+			{Type: TransformPRF, ID: prfID},
+			{Type: TransformINTEG, ID: integID},
+			{Type: TransformDHRGroup, ID: dhID},
 		},
-	}}}
+	}
 }
 
 func DefaultESPProposal(spi []byte) SecurityAssociation {

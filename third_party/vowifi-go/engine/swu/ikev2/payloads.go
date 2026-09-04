@@ -15,6 +15,8 @@ const (
 )
 
 const (
+	NotifyNoProposalChosen          uint16 = 14
+	NotifyInvalidKEPayload          uint16 = 17
 	NotifyUnacceptableAddresses     uint16 = 40
 	NotifyUnexpectedNATDetected     uint16 = 41
 	NotifyNATDetectionSourceIP      uint16 = 16388
@@ -30,6 +32,8 @@ const (
 )
 
 const (
+	DHGroup1024BitMODP uint16 = 2
+	DHGroup1536BitMODP uint16 = 5
 	DHGroup2048BitMODP uint16 = 14
 	DHGroup256BitECP   uint16 = 19
 	DHGroup384BitECP   uint16 = 20

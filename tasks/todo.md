@@ -1139,8 +1139,15 @@
 
 ### 下一步建议
 
-- [ ] RED：为本项目 `RunIKE_SA_INIT` 或上层 `IKEPacketTunnelManager` 增加 `INVALID_KE_PAYLOAD` 响应测试，模拟 ePDG 返回 preferred group 2，要求重新生成 DH 并重发 SA_INIT。
-- [ ] GREEN：新增 MODP 1024/1536 常量、密钥生成和共享密钥计算，优先确保 MODP 1024 + SHA1 legacy 组合可完成本地协议测试。
-- [ ] GREEN：新增多 proposal 构造器，至少覆盖 SHA2/MODP2048 与 SHA1/MODP1024 两类，默认顺序要可控并记录日志。
-- [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。
+- [x] RED：为本项目 `RunIKE_SA_INIT` 增加 `INVALID_KE_PAYLOAD` 响应测试，模拟 ePDG 返回 preferred group 2，要求重新生成 DH 并重发 SA_INIT；旧实现失败于把错误响应解析成普通成功响应并报 `responder SPI is zero`。
+- [x] GREEN：新增 MODP 1024/1536 常量、密钥生成和共享密钥计算，优先确保 MODP 1024 + SHA1 legacy 组合可完成本地协议测试。
+- [x] GREEN：新增默认多 proposal，覆盖 SHA2/MODP2048、SHA1/MODP1024、SHA1/MODP1536 和原 Curve25519 兼容项。
+- [x] GREEN：扩展 live IKE 探针参数，支持 `VOHIVE_LIVE_IKE_DH_GROUP=modp1024|modp1536`。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu -count=1` 通过。
+- [x] VERIFY：2026-09-04 复跑 `./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1`，四个包通过，其中 `internal/device` 用时约 57 秒。
+- [x] DEPLOY：2026-09-04 已用项目内 Go 工具链重新编译 Linux amd64 后端 `dist/vohive-open_linux_amd64`，版本注入 `1.0.5`；本地产物与 WSL `/opt/vohive/bin/vohive` SHA256 均为 `651e02a5dd87383e2ff6aaff9ea9d8ddd4fbe3bba604096e788bbf830addffa7`。
+- [x] DEPLOY：2026-09-04 已按桌面壳同样方式以 WSL root 启动 `/opt/vohive/bin/vohive -c /opt/vohive/config/config.yaml`，当前进程 PID `4630`，`/ping` 返回 `{"message":"pong"}`。
+- [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。本轮尝试执行 live 探针时审批层返回 usage limit 拒绝，未绕过执行。
 - [ ] 后续：P1 仍失败时，再逐个补 COOKIE、REDIRECT、IKE Fragmentation、DPD/窗口重传，避免一次性搬完整 `swu-go` 引入不可控回归。

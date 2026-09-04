@@ -152,6 +152,10 @@ func liveIKEProposal(t *testing.T) ikev2.SecurityAssociation {
 	switch os.Getenv("VOHIVE_LIVE_IKE_DH_GROUP") {
 	case "", "curve25519":
 		return ikev2.SecurityAssociation{}
+	case "modp1024":
+		return liveIKEProposalForGroup(ikev2.DHGroup1024BitMODP)
+	case "modp1536":
+		return liveIKEProposalForGroup(ikev2.DHGroup1536BitMODP)
 	case "ecp256":
 		return liveIKEProposalForGroup(ikev2.DHGroup256BitECP)
 	case "ecp384":
