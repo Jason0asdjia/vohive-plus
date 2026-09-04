@@ -193,3 +193,4 @@
 - IKE_SA_INIT 阶段尚未进入 EAP-AKA/IMS 身份认证，ePDG 通常只能看到源公网 IP、UDP 端口、IKE proposal、Vendor ID、NAT-D 等首包特征；“卡先在 CN 漫游驻网”更可能影响本地模组/SIM/启动时序，而不是让 ePDG 在首包阶段直接识别 IMSI。
 - 真实手机 WiFi Calling 可能多次尝试才成功，VoHive 不能只用一次 IKE_INIT 超时作为最终用户体验；应在诊断模式记录多次尝试、候选 ePDG IP 和每次错误，但不能把无限重试当成根因修复。
 - 桌面壳里的“后端运行体选择”是用户意图配置，不是一次性按钮状态；作为可部署备用后端时必须持久保存，并在读取到未知旧值时回退默认后端，避免重启应用后悄悄恢复到另一套运行体。
+- 后端重新编译后不能只更新 `dist/` 和 `desktop/src-tauri/resources/vohive/`；用户常用的本地桌面壳可能直接从 Tauri 已构建的 `desktop/src-tauri/target/{debug,release}/resources/vohive/` 部署后端。每次同步都要刷新源码资源和已存在/会被使用的 target 运行资源，并用 SHA256 核对 WSL `/opt/vohive/bin/vohive` 与桌面资源一致。

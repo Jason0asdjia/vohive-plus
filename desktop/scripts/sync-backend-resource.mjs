@@ -1,7 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { get } from 'node:https'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -9,6 +9,9 @@ const desktopDir = resolve(scriptDir, '..')
 const repoRoot = resolve(desktopDir, '..')
 
 const resourcesDir = resolve(desktopDir, 'src-tauri', 'resources', 'vohive')
+const tauriTargetDir = resolve(
+  process.env.VOHIVE_TAURI_TARGET_DIR || resolve(desktopDir, 'src-tauri', 'target')
+)
 const defaultOrsonDownloadUrl =
   'https://raw.githubusercontent.com/Orson-Yan/Vohive-155/main/release/vohive_v1.5.5-10-gf9eb85d_linux_amd64'
 const orsonDownloadUrl = Object.hasOwn(process.env, 'VOHIVE_ORSON_BACKEND_URL')
@@ -45,14 +48,11 @@ await syncRuntime(orsonRuntime)
 
 async function syncRuntime(runtime) {
   if (existsSync(runtime.source)) {
-    mkdirSync(dirname(runtime.destination), { recursive: true })
-    copyFileSync(runtime.source, runtime.destination)
-    chmodSync(runtime.destination, 0o755)
-    console.log(`Synced ${runtime.label} resource from ${runtime.source}`)
+    syncRuntimeFile(runtime, runtime.source, `from ${runtime.source}`)
     return
   }
   if (existsSync(runtime.destination)) {
-    console.log(`Using existing ${runtime.label} resource at ${runtime.destination}`)
+    syncRuntimeFile(runtime, runtime.destination, `from existing ${runtime.destination}`)
     return
   }
   if (!runtime.required) {
@@ -62,6 +62,7 @@ async function syncRuntime(runtime) {
         await download(runtime.downloadUrl, runtime.destination)
         chmodSync(runtime.destination, 0o755)
         console.log(`Downloaded optional ${runtime.label} resource from ${runtime.downloadUrl}`)
+        syncTargetResources(runtime, runtime.destination)
       } catch (err) {
         rmSync(runtime.destination, { force: true })
         console.log(`Skipping optional ${runtime.label} resource; download failed: ${err.message}`)
@@ -80,6 +81,30 @@ async function syncRuntime(runtime) {
     ].join('\n')
   )
   process.exit(1)
+}
+
+function syncRuntimeFile(runtime, source, sourceLabel) {
+  mkdirSync(dirname(runtime.destination), { recursive: true })
+  copyFileSync(source, runtime.destination)
+  chmodSync(runtime.destination, 0o755)
+  console.log(`Synced ${runtime.label} resource ${sourceLabel}`)
+  syncTargetResources(runtime, runtime.destination)
+}
+
+function syncTargetResources(runtime, source) {
+  for (const mode of ['debug', 'release']) {
+    const destination = resolve(
+      tauriTargetDir,
+      mode,
+      'resources',
+      'vohive',
+      basename(runtime.destination)
+    )
+    mkdirSync(dirname(destination), { recursive: true })
+    copyFileSync(source, destination)
+    chmodSync(destination, 0o755)
+    console.log(`Synced ${runtime.label} target resource to ${destination}`)
+  }
 }
 
 function download(url, destination) {

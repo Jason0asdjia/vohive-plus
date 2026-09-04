@@ -1121,6 +1121,11 @@
 
 ### 根因调查
 
+- [x] 2026-09-04 用户通过桌面端重试后仍报 `SWU tunnel establishment failed: read udp 127.0.0.1:47958->127.0.0.1:59568: i/o timeout`；应用日志显示当前运行体曾在 14:08 完成 `INVALID_KE_PAYLOAD preferred_group=2`、回落 `sha1_legacy/MODP_1024` 并进入 `Child SA`，说明上一轮 SA_INIT 修复方向有效，当前失败已推进到后续 IKE_AUTH/会话/代理重试层。
+- [x] 2026-09-04 重新核对运行体：WSL `/opt/vohive/bin/vohive` SHA256 为 `76cf1bd218c9d24b2e26060ad2e919788918ac00f820405ece4070636806f621`，而本项目 `dist/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 均为 `651e02a5dd87383e2ff6aaff9ea9d8ddd4fbe3bba604096e788bbf830addffa7`；差异来自桌面端使用 Tauri `target/*/resources/vohive/` 中的旧资源重新部署。
+- [x] RED：为桌面后端资源同步脚本增加回归测试，要求同步源码资源目录的同时，也同步已构建桌面工具运行时会读取的 `src-tauri/target/debug/resources/vohive/` 与 `src-tauri/target/release/resources/vohive/`。
+- [x] GREEN：修改同步脚本，让每次重新编译后端并执行 `pnpm sync:backend` 时，当前 debug/release 桌面工具下一次部署也能拿到同一个 Linux 后端二进制。
+- [x] DEPLOY：执行同步脚本，核对 `dist`、`src-tauri/resources`、`target/debug/resources`、`target/release/resources` 四处主后端 SHA256 一致后，再覆盖 WSL `/opt/vohive/bin/vohive` 并重启。
 - [x] 2026-09-04 已克隆 `hzlmy2002/vohive-collection` 到 `.tmp/vohive-collection`，当前对照提交为 `0c3052c`；该仓库是源码快照集合，包含 `vohive`、`vowifi-go`、`swu-go`、`quectel-qmi-go`、`uicc-go`、`euicc-go`、`netlink`、`qqbot` 等。
 - [x] 2026-09-04 本项目已先提交保存：`209e5b9 修复 VoWiFi 代理数据面并支持备用后端`；当前本地 `main` 相对 `origin/main` 为 ahead 1。
 - [x] 2026-09-04 `third_party/quectel-qmi-go` 与 collection 的 `quectel-qmi-go` 内容差异只集中在 `go.mod/go.sum`，当前 QMI/短信问题不应优先通过整体替换 QMI 库解决。
@@ -1149,5 +1154,6 @@
 - [x] VERIFY：2026-09-04 复跑 `./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1`，四个包通过，其中 `internal/device` 用时约 57 秒。
 - [x] DEPLOY：2026-09-04 已用项目内 Go 工具链重新编译 Linux amd64 后端 `dist/vohive-open_linux_amd64`，版本注入 `1.0.5`；本地产物与 WSL `/opt/vohive/bin/vohive` SHA256 均为 `651e02a5dd87383e2ff6aaff9ea9d8ddd4fbe3bba604096e788bbf830addffa7`。
 - [x] DEPLOY：2026-09-04 已按桌面壳同样方式以 WSL root 启动 `/opt/vohive/bin/vohive -c /opt/vohive/config/config.yaml`，当前进程 PID `4630`，`/ping` 返回 `{"message":"pong"}`。
+- [x] VERIFY：2026-09-04 `node --test desktop\tests\syncBackendResource.test.mjs` 5 项通过；`pnpm sync:backend` 已把主后端同步到 `desktop/src-tauri/resources/vohive/`、`desktop/src-tauri/target/debug/resources/vohive/`、`desktop/src-tauri/target/release/resources/vohive/`，四处 SHA256 一致。
 - [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。本轮尝试执行 live 探针时审批层返回 usage limit 拒绝，未绕过执行。
 - [ ] 后续：P1 仍失败时，再逐个补 COOKIE、REDIRECT、IKE Fragmentation、DPD/窗口重传，避免一次性搬完整 `swu-go` 引入不可控回归。
