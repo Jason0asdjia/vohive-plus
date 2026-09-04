@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -104,6 +104,34 @@ test('sync backend resource refreshes built desktop target resources', () => {
     assert.equal(readFileSync(debugDestination, 'utf8'), 'new-linux-runtime')
     assert.equal(readFileSync(releaseDestination, 'utf8'), 'new-linux-runtime')
     assert.match(result.stdout, /Synced Linux backend target resource/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('sync backend resource does not recreate missing debug target resources', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vohive-sync-no-debug-target-'))
+  try {
+    const source = join(dir, 'dist', 'vohive-open_linux_amd64')
+    const primaryDestination = join(dir, 'desktop', 'src-tauri', 'resources', 'vohive', 'vohive-open_linux_amd64')
+    const targetDir = join(dir, 'desktop', 'src-tauri', 'target')
+    const debugDestination = join(targetDir, 'debug', 'resources', 'vohive', 'vohive-open_linux_amd64')
+    const releaseDestination = join(targetDir, 'release', 'resources', 'vohive', 'vohive-open_linux_amd64')
+    mkdirSync(join(dir, 'dist'), { recursive: true })
+    mkdirSync(join(targetDir, 'release', 'resources', 'vohive'), { recursive: true })
+    writeFileSync(source, 'new-linux-runtime')
+    writeFileSync(releaseDestination, 'old-release-runtime')
+
+    const result = runSync({
+      VOHIVE_BACKEND_SOURCE: source,
+      VOHIVE_BACKEND_DEST: primaryDestination,
+      VOHIVE_TAURI_TARGET_DIR: targetDir,
+    })
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(readFileSync(primaryDestination, 'utf8'), 'new-linux-runtime')
+    assert.equal(readFileSync(releaseDestination, 'utf8'), 'new-linux-runtime')
+    assert.equal(existsSync(debugDestination), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

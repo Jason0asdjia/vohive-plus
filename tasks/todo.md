@@ -1157,3 +1157,20 @@
 - [x] VERIFY：2026-09-04 `node --test desktop\tests\syncBackendResource.test.mjs` 5 项通过；`pnpm sync:backend` 已把主后端同步到 `desktop/src-tauri/resources/vohive/`、`desktop/src-tauri/target/debug/resources/vohive/`、`desktop/src-tauri/target/release/resources/vohive/`，四处 SHA256 一致。
 - [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。本轮尝试执行 live 探针时审批层返回 usage limit 拒绝，未绕过执行。
 - [ ] 后续：P1 仍失败时，再逐个补 COOKIE、REDIRECT、IKE Fragmentation、DPD/窗口重传，避免一次性搬完整 `swu-go` 引入不可控回归。
+
+### 2026-09-04 IKE_AUTH 首包兼容性补齐
+
+- [x] 根因调查：用户截图中的当前 Plus 失败点为 `SWU tunnel establishment failed: invalid ikev2 auth response: IKE_AUTH did not complete EAP`；这说明 UDP 代理和 SA_INIT 已推进到 IKE_AUTH 层，但 ePDG 没有进入 EAP-AKA。
+- [x] 对照结论：`hzlmy2002/vohive-collection` 的 `swu-go/pkg/swu/state_auth.go` 在 IKE_AUTH 首包中发送 `IDi -> IDr -> CP -> SA -> TSi -> TSr -> EAP_ONLY_AUTHENTICATION -> MOBIKE_SUPPORTED -> TICKET_REQUEST -> INITIAL_CONTACT`；本项目旧实现缺少 `IDr` 和这些 VoWiFi 兼容 Notify。
+- [x] RED：新增 IKE_AUTH 失败诊断测试，要求无 EAP 响应时错误必须带 `payloadTypes`/`notifyTypes` 摘要；旧实现只返回 `IKE_AUTH did not complete EAP`。
+- [x] RED：新增 SWU/runtimehost APN 传递测试，要求 `TunnelConfig.APN=ims` 最终进入 `FullAuthConfig.ResponderID=ID_FQDN ims`；旧实现没有 APN 字段，编译失败。
+- [x] RED：新增桌面资源同步测试，要求 `target/debug` 不存在时 `pnpm sync:backend` 不得重新创建 debug 资源目录；旧实现会无条件 `mkdirSync`。
+- [x] GREEN：`BuildIKEAuthInitialPayloads` 已补齐 `IDr`、`EAP_ONLY_AUTHENTICATION`、`TICKET_REQUEST`、`INITIAL_CONTACT`，并保留 `MOBIKE_SUPPORTED`；`RunIKE_AUTH_Full` 在未进入 EAP 时输出响应 payload/notify 摘要。
+- [x] GREEN：`swu.TunnelConfig` 增加 VoWiFi IMS APN，`runtimehost` 默认传入 `ims`，`IKEPacketTunnelManager` 从该字段构造 responder identity，避免底层只靠硬编码。
+- [x] GREEN：`desktop/scripts/sync-backend-resource.mjs` 只刷新已经存在的 target 资源目录；用户已删除的 `target/debug` 不再被同步脚本重新创建。
+- [x] VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs` 6 项通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./internal/device -count=1` 通过，用时约 57 秒。
+- [x] DEPLOY：已重新编译 Linux amd64 后端，正确注入 `Version=1.0.5` 和 `BuildTime=2026-09-04T08:45:56Z`；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `ab32bd1c42c4cb2c4058217150d0bb8be23754a864d503eaa6310d778416fefb`。
+- [x] DEPLOY：WSL 后端已按桌面壳同款 `/opt/vohive` 工作目录重启，当前进程 PID `14966`，`/ping` 返回 `{"message":"pong"}`；登录后 `/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T08:45:56Z`。
+- [x] NOTE：首次同步 release target 时 Windows 返回过 `EBUSY`，重试后成功；未发现 `vohive-plus-desktop.exe` 进程，后续若复现应优先查残留文件句柄或短暂扫描锁。

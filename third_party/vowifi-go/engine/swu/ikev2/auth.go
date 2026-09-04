@@ -28,6 +28,7 @@ type AuthConfig struct {
 	Init             InitResult
 	Keys             IKEKeys
 	InitiatorID      Identity
+	ResponderID      Identity
 	EAPIdentity      string
 	ChildSA          SecurityAssociation
 	ChildSPI         []byte
@@ -104,6 +105,7 @@ type FullAuthConfig struct {
 	SIM                sim.AKAProvider
 	EAPKeys            eapaka.Keys
 	InitiatorID        Identity
+	ResponderID        Identity
 	EAPIdentity        string
 	EAPReauthIdentity  string
 	EAPReauthCounter   uint16
@@ -266,6 +268,7 @@ func RunIKE_AUTH_Full(ctx context.Context, cfg FullAuthConfig) (FullAuthResult, 
 		Init:             cfg.Init,
 		Keys:             cfg.Keys,
 		InitiatorID:      cfg.InitiatorID,
+		ResponderID:      cfg.ResponderID,
 		EAPIdentity:      cfg.EAPIdentity,
 		ChildSA:          cfg.ChildSA,
 		ChildSPI:         localChildSPI,
@@ -302,7 +305,7 @@ func RunIKE_AUTH_Full(ctx context.Context, cfg FullAuthConfig) (FullAuthResult, 
 	identityTranscript := cloneByteSlices(auth.IdentityTranscript)
 	for i := 0; i < maxFullAuthEAPExchanges; i++ {
 		if next == nil {
-			return out, fmt.Errorf("%w: IKE_AUTH did not complete EAP", ErrInvalidAuthResponse)
+			return out, fmt.Errorf("%w: IKE_AUTH did not complete EAP%s", ErrInvalidAuthResponse, authPayloadSummary(out.FinalResponseInner))
 		}
 		out.EAPLast = cloneEAPPacketPtr(next)
 		if next.Code == eapaka.CodeSuccess {
@@ -411,6 +414,28 @@ func RunIKE_AUTH_Full(ctx context.Context, cfg FullAuthConfig) (FullAuthResult, 
 		next = challenge.EAPNext
 	}
 	return out, fmt.Errorf("%w: too many IKE_AUTH EAP exchanges", ErrInvalidAuthResponse)
+}
+
+func authPayloadSummary(payloads []Payload) string {
+	if len(payloads) == 0 {
+		return " payloadTypes=[]"
+	}
+	payloadTypes := make([]uint8, 0, len(payloads))
+	notifyTypes := make([]uint16, 0, len(payloads))
+	for _, payload := range payloads {
+		payloadTypes = append(payloadTypes, payload.Type)
+		if payload.Type != PayloadNotify {
+			continue
+		}
+		notify, err := ParseNotify(payload.Body)
+		if err == nil {
+			notifyTypes = append(notifyTypes, notify.NotifyType)
+		}
+	}
+	if len(notifyTypes) == 0 {
+		return fmt.Sprintf(" payloadTypes=%v", payloadTypes)
+	}
+	return fmt.Sprintf(" payloadTypes=%v notifyTypes=%v", payloadTypes, notifyTypes)
 }
 
 func RunIKE_AUTH_AKAChallenge(ctx context.Context, cfg AKAChallengeConfig) (AKAChallengeResult, error) {
@@ -783,6 +808,14 @@ func BuildIKEAuthInitialPayloads(cfg AuthConfig) ([]Payload, error) {
 	if err != nil {
 		return nil, err
 	}
+	responderID := cfg.ResponderID
+	if responderID.Type == 0 {
+		responderID = Identity{Type: IDFQDN, Data: []byte("ims")}
+	}
+	idrPayload, err := IdentityPayload(PayloadIDr, responderID)
+	if err != nil {
+		return nil, err
+	}
 	childSA := cfg.ChildSA
 	if len(childSA.Proposals) == 0 {
 		spi := append([]byte(nil), cfg.ChildSPI...)
@@ -826,7 +859,18 @@ func BuildIKEAuthInitialPayloads(cfg AuthConfig) ([]Payload, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []Payload{idPayload, cfgPayload, saPayload, tsiPayload, tsrPayload}, nil
+	return []Payload{
+		idPayload,
+		idrPayload,
+		cfgPayload,
+		saPayload,
+		tsiPayload,
+		tsrPayload,
+		EAPOnlyAuthenticationNotify(),
+		MOBIKESupportedNotify(),
+		TicketRequestNotify(),
+		InitialContactNotify(),
+	}, nil
 }
 
 func authHeader(init InitResult, messageID uint32, fromInitiator bool) Header {

@@ -93,14 +93,12 @@ function syncRuntimeFile(runtime, source, sourceLabel) {
 
 function syncTargetResources(runtime, source) {
   for (const mode of ['debug', 'release']) {
-    const destination = resolve(
-      tauriTargetDir,
-      mode,
-      'resources',
-      'vohive',
-      basename(runtime.destination)
-    )
-    mkdirSync(dirname(destination), { recursive: true })
+    const resourceDir = resolve(tauriTargetDir, mode, 'resources', 'vohive')
+    if (!existsSync(resourceDir)) {
+      console.log(`Skipping ${runtime.label} target resource for missing ${mode} target`)
+      continue
+    }
+    const destination = resolve(resourceDir, basename(runtime.destination))
     copyFileSync(source, destination)
     chmodSync(destination, 0o755)
     console.log(`Synced ${runtime.label} target resource to ${destination}`)

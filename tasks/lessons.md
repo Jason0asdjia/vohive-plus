@@ -194,3 +194,8 @@
 - 真实手机 WiFi Calling 可能多次尝试才成功，VoHive 不能只用一次 IKE_INIT 超时作为最终用户体验；应在诊断模式记录多次尝试、候选 ePDG IP 和每次错误，但不能把无限重试当成根因修复。
 - 桌面壳里的“后端运行体选择”是用户意图配置，不是一次性按钮状态；作为可部署备用后端时必须持久保存，并在读取到未知旧值时回退默认后端，避免重启应用后悄悄恢复到另一套运行体。
 - 后端重新编译后不能只更新 `dist/` 和 `desktop/src-tauri/resources/vohive/`；用户常用的本地桌面壳可能直接从 Tauri 已构建的 `desktop/src-tauri/target/{debug,release}/resources/vohive/` 部署后端。每次同步都要刷新源码资源和已存在/会被使用的 target 运行资源，并用 SHA256 核对 WSL `/opt/vohive/bin/vohive` 与桌面资源一致。
+- IKE_AUTH 报 `did not complete EAP` 时不能只看网络/代理；要解密响应后记录 `payloadTypes` 和 `notifyTypes`。如果 ePDG 返回的是 Notify 而不是 EAP，应优先对照首包 payload 顺序、`IDr`、`EAP_ONLY_AUTHENTICATION`、`TICKET_REQUEST`、`INITIAL_CONTACT` 等 VoWiFi 兼容项。
+- VoWiFi IKE_AUTH 的 responder identity 应来自明确的 IMS APN 配置，默认可为 `ims`；不要把它写成隐藏硬编码，也不要和普通蜂窝数据 APN 混为同一个用户策略字段。
+- `desktop/scripts/sync-backend-resource.mjs` 只能刷新已存在的 Tauri target 资源目录。用户已经删除 `target/debug` 时，同步脚本不能为了“保险”重新创建 debug，否则会让磁盘体积反弹，也可能再次制造桌面端部署旧资源的问题。
+- 部署脚本里用 `pkill -f` 时不能匹配会出现在当前 bash `-lc` 命令行里的宽泛字符串，否则可能把自己的部署脚本一并杀掉；应使用锚定真实进程命令行的模式或先收集 PID 再逐个处理。
+- WSL 后端启动必须以 `/opt/vohive` 为工作目录。只传 `-c /opt/vohive/config/config.yaml` 还不够，数据库、缓存等相对路径会落到当前目录，可能导致 SQLite 打开失败。

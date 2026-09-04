@@ -29,6 +29,9 @@ const (
 	NotifyUpdateSAAddresses         uint16 = 16400
 	NotifyCookie2                   uint16 = 16401
 	NotifyNoNATsAllowed             uint16 = 16402
+	NotifyInitialContact            uint16 = 16384
+	NotifyTicketRequest             uint16 = 16410
+	NotifyEAPOnlyAuthentication     uint16 = 16417
 )
 
 const (
@@ -281,6 +284,21 @@ func NATDetectionNotify(notifyType uint16, spiI, spiR uint64, ip net.IP, port ui
 
 func MOBIKESupportedNotify() Payload {
 	body, _ := (Notify{NotifyType: NotifyMOBIKESupported}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func EAPOnlyAuthenticationNotify() Payload {
+	body, _ := (Notify{ProtocolID: ProtocolIKE, NotifyType: NotifyEAPOnlyAuthentication}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func TicketRequestNotify() Payload {
+	body, _ := (Notify{NotifyType: NotifyTicketRequest}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func InitialContactNotify() Payload {
+	body, _ := (Notify{NotifyType: NotifyInitialContact}).MarshalBinary()
 	return Payload{Type: PayloadNotify, Body: body}
 }
 

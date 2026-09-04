@@ -50,6 +50,7 @@ type TunnelConfig struct {
 	MCC            string
 	MNC            string
 	IMEI           string
+	APN            string
 	Identity       IMSIdentity
 	Proxy          *ProxyConfig
 	StartedAt      time.Time

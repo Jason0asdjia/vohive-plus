@@ -1256,6 +1256,7 @@ func buildTunnelConfig(req StartRequest, modem Modem) swu.TunnelConfig {
 		MCC:       strings.TrimSpace(req.Profile.MCC),
 		MNC:       strings.TrimSpace(req.Profile.MNC),
 		IMEI:      strings.TrimSpace(req.Profile.IMEI),
+		APN:       runtimeVoWiFiAPN(req),
 		Proxy:     toSWUProxyConfig(req.Proxy),
 		StartedAt: time.Now(),
 	}
@@ -1284,6 +1285,10 @@ func buildTunnelConfig(req StartRequest, modem Modem) swu.TunnelConfig {
 		}
 	}
 	return cfg
+}
+
+func runtimeVoWiFiAPN(StartRequest) string {
+	return "ims"
 }
 
 func toSWUProxyConfig(p *ProxyConfig) *swu.ProxyConfig {

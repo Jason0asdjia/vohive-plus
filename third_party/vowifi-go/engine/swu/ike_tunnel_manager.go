@@ -66,6 +66,7 @@ type IKEPacketTunnelManagerConfig struct {
 	Reauthentication         EAPReauthenticationState
 	OnReauthenticationState  func(EAPReauthenticationState)
 	InitiatorID              ikev2.Identity
+	ResponderID              ikev2.Identity
 	IKETransportFactory      IKETransportFactory
 	ESPTransportFactory      IKEESPTransportFactory
 	InitRunner               IKEInitRunner
@@ -133,6 +134,10 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 	if initiatorID.Type == 0 {
 		initiatorID = ikev2.Identity{Type: ikev2.IDRFC822Addr, Data: []byte(identity)}
 	}
+	responderID := m.Config.ResponderID
+	if responderID.Type == 0 {
+		responderID = responderIDForTunnel(cfg)
+	}
 	random := m.Config.Random
 	if random == nil {
 		random = rand.Reader
@@ -185,6 +190,7 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 			SIM:                provider,
 			EAPKeys:            reauth.Keys,
 			InitiatorID:        initiatorID,
+			ResponderID:        responderID,
 			EAPIdentity:        identity,
 			EAPReauthIdentity:  reauth.Identity,
 			EAPReauthCounter:   reauth.Counter,
@@ -714,6 +720,14 @@ func eapIdentityForTunnel(cfg TunnelConfig, override string) (string, error) {
 		prefix = "0"
 	}
 	return fmt.Sprintf("%s%s@nai.epc.mnc%s.mcc%s.3gppnetwork.org", prefix, raw, leftPadTunnel(mnc, 3), mcc), nil
+}
+
+func responderIDForTunnel(cfg TunnelConfig) ikev2.Identity {
+	apn := strings.TrimSpace(cfg.APN)
+	if apn == "" {
+		apn = "ims"
+	}
+	return ikev2.Identity{Type: ikev2.IDFQDN, Data: []byte(apn)}
 }
 
 func normalizeTunnelIdentity(identity string) string {

@@ -619,6 +619,9 @@ func TestStartEstablishesTunnelWhenManagerProvided(t *testing.T) {
 	if manager.config.EPDGAddress != "epdg.example" || manager.config.Identity.Domain != "one.att.net" {
 		t.Fatalf("tunnel config=%+v", manager.config)
 	}
+	if manager.config.APN != "ims" {
+		t.Fatalf("tunnel APN=%q, want ims", manager.config.APN)
+	}
 }
 
 func TestStartBuildsTunnelManagerForExplicitUserspaceDataplane(t *testing.T) {

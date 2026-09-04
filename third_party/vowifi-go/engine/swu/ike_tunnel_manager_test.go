@@ -63,6 +63,7 @@ func TestIKEPacketTunnelManagerEstablishesPacketSession(t *testing.T) {
 		IMSI:         "310280233641503",
 		MCC:          "310",
 		MNC:          "280",
+		APN:          "ims",
 		Identity:     IMSIdentity{IMPI: "310280233641503@private.att.net"},
 	})
 	if err != nil {
@@ -99,6 +100,9 @@ func TestIKEPacketTunnelManagerEstablishesPacketSession(t *testing.T) {
 	}
 	if gotAuth.InitiatorID.Type != ikev2.IDRFC822Addr || string(gotAuth.InitiatorID.Data) != gotAuth.EAPIdentity {
 		t.Fatalf("initiator id=%+v", gotAuth.InitiatorID)
+	}
+	if gotAuth.ResponderID.Type != ikev2.IDFQDN || string(gotAuth.ResponderID.Data) != "ims" {
+		t.Fatalf("responder id=%+v, want FQDN ims", gotAuth.ResponderID)
 	}
 	if !bytes.Equal(gotAuth.ChildSPI, []byte{0xca, 0xfe, 0xba, 0xbe}) {
 		t.Fatalf("child SPI=%x", gotAuth.ChildSPI)

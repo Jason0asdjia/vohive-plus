@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/iniwex5/vowifi-go/engine/sim"
@@ -31,7 +32,7 @@ func (f *authFakeTransport) ExchangeIKE(ctx context.Context, request []byte) ([]
 			f.t.Fatalf("first auth header=%+v", msg.Header)
 		}
 		f.firstInner = clonePayloads(inner)
-		if gotTypes(inner); !bytes.Equal(gotTypes(inner), []byte{PayloadIDi, PayloadCP, PayloadSA, PayloadTSi, PayloadTSr}) {
+		if gotTypes(inner); !bytes.Equal(gotTypes(inner), []byte{PayloadIDi, PayloadIDr, PayloadCP, PayloadSA, PayloadTSi, PayloadTSr, PayloadNotify, PayloadNotify, PayloadNotify, PayloadNotify}) {
 			f.t.Fatalf("first inner types=%v", gotTypes(inner))
 		}
 		req, err := (eapaka.Packet{
@@ -116,7 +117,7 @@ func TestRunIKEAuthEAPIdentity(t *testing.T) {
 	if transport.exchanges != 2 || transport.identity != "310280233641503@nai.epc.mnc280.mcc310.3gppnetwork.org" {
 		t.Fatalf("exchanges=%d identity=%q", transport.exchanges, transport.identity)
 	}
-	childSA, err := ParseSecurityAssociation(transport.firstInner[2].Body)
+	childSA, err := ParseSecurityAssociation(transport.firstInner[3].Body)
 	if err != nil {
 		t.Fatalf("ParseSecurityAssociation() error = %v", err)
 	}
@@ -162,7 +163,7 @@ func TestRunIKEAuthFullCompletesAKAWithNotification(t *testing.T) {
 		}
 		switch exchanges {
 		case 0:
-			if msg.Header.MessageID != 1 || !bytes.Equal(gotTypes(inner), []byte{PayloadIDi, PayloadCP, PayloadSA, PayloadTSi, PayloadTSr}) {
+			if msg.Header.MessageID != 1 || !bytes.Equal(gotTypes(inner), []byte{PayloadIDi, PayloadIDr, PayloadCP, PayloadSA, PayloadTSi, PayloadTSr, PayloadNotify, PayloadNotify, PayloadNotify, PayloadNotify}) {
 				t.Fatalf("initial auth header=%+v inner types=%v", msg.Header, gotTypes(inner))
 			}
 			req := eapaka.Packet{
@@ -1309,6 +1310,71 @@ func TestBuildIKEAuthInitialPayloadsRejectsMissingID(t *testing.T) {
 	_, err := BuildIKEAuthInitialPayloads(AuthConfig{})
 	if !errors.Is(err, ErrInvalidIdentity) {
 		t.Fatalf("BuildIKEAuthInitialPayloads() err=%v, want ErrInvalidIdentity", err)
+	}
+}
+
+func TestRunIKEAuthFullReportsNotifyWhenEAPDoesNotStart(t *testing.T) {
+	init := fakeInitResult(t)
+	transport := InitTransportFunc(func(ctx context.Context, request []byte) ([]byte, error) {
+		_, _, err := UnprotectMessage(request, init.Keys, true)
+		if err != nil {
+			return nil, err
+		}
+		notify, err := NotifyPayload(Notify{NotifyType: NotifyNoProposalChosen})
+		if err != nil {
+			return nil, err
+		}
+		_, rawResp, err := ProtectMessage(authHeader(init, 1, false), init.Keys, false, []Payload{notify}, bytes.Repeat([]byte{0x61}, init.Keys.Profile.EncryptionBlockSize))
+		return rawResp, err
+	})
+
+	_, err := RunIKE_AUTH_Full(context.Background(), FullAuthConfig{
+		Transport:   transport,
+		Init:        init,
+		InitiatorID: Identity{Type: IDRFC822Addr, Data: []byte("0234159612842639@nai.epc.mnc015.mcc234.3gppnetwork.org")},
+		ChildSPI:    []byte{0xca, 0xfe, 0xba, 0xbe},
+	})
+	if !errors.Is(err, ErrInvalidAuthResponse) {
+		t.Fatalf("RunIKE_AUTH_Full() err=%v, want ErrInvalidAuthResponse", err)
+	}
+	if !strings.Contains(err.Error(), "notifyTypes=[14]") || !strings.Contains(err.Error(), "payloadTypes=[41]") {
+		t.Fatalf("RunIKE_AUTH_Full() err=%v, want payload and notify summaries", err)
+	}
+}
+
+func TestBuildIKEAuthInitialPayloadsIncludesVoWiFiCompatibilityNotifies(t *testing.T) {
+	payloads, err := BuildIKEAuthInitialPayloads(AuthConfig{
+		InitiatorID: Identity{Type: IDRFC822Addr, Data: []byte("0234159612842639@nai.epc.mnc015.mcc234.3gppnetwork.org")},
+		ChildSPI:    []byte{0xca, 0xfe, 0xba, 0xbe},
+	})
+	if err != nil {
+		t.Fatalf("BuildIKEAuthInitialPayloads() error = %v", err)
+	}
+	wantTypes := []byte{PayloadIDi, PayloadIDr, PayloadCP, PayloadSA, PayloadTSi, PayloadTSr, PayloadNotify, PayloadNotify, PayloadNotify, PayloadNotify}
+	if !bytes.Equal(gotTypes(payloads), wantTypes) {
+		t.Fatalf("payload types=%v, want %v", gotTypes(payloads), wantTypes)
+	}
+	idr, err := ParseIdentity(payloads[1].Body)
+	if err != nil {
+		t.Fatalf("ParseIdentity(IDr) error = %v", err)
+	}
+	if idr.Type != IDFQDN || string(idr.Data) != "ims" {
+		t.Fatalf("IDr=%+v, want FQDN ims", idr)
+	}
+	wantNotifies := []uint16{
+		NotifyEAPOnlyAuthentication,
+		NotifyMOBIKESupported,
+		NotifyTicketRequest,
+		NotifyInitialContact,
+	}
+	for i, want := range wantNotifies {
+		notify, err := ParseNotify(payloads[6+i].Body)
+		if err != nil {
+			t.Fatalf("ParseNotify(%d) error = %v", i, err)
+		}
+		if notify.NotifyType != want {
+			t.Fatalf("notify[%d]=%d, want %d", i, notify.NotifyType, want)
+		}
 	}
 }
 
