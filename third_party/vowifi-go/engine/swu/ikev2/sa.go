@@ -90,16 +90,23 @@ func ikeProposal(number uint8, prfID, integID, dhID uint16) Proposal {
 }
 
 func DefaultESPProposal(spi []byte) SecurityAssociation {
-	return SecurityAssociation{Proposals: []Proposal{{
-		Number:     1,
+	return SecurityAssociation{Proposals: []Proposal{
+		espCBCProposal(1, spi, INTEG_HMAC_SHA2_256_128),
+		espCBCProposal(2, spi, INTEG_HMAC_SHA1_96),
+	}}
+}
+
+func espCBCProposal(number uint8, spi []byte, integID uint16) Proposal {
+	return Proposal{
+		Number:     number,
 		ProtocolID: ProtocolESP,
 		SPI:        append([]byte(nil), spi...),
 		Transforms: []Transform{
 			{Type: TransformENCR, ID: ENCR_AES_CBC, Attributes: []TransformAttribute{KeyLengthAttribute(128)}},
-			{Type: TransformINTEG, ID: INTEG_HMAC_SHA2_256_128},
+			{Type: TransformINTEG, ID: integID},
 			{Type: TransformESN, ID: ESNNo},
 		},
-	}}}
+	}
 }
 
 func (sa SecurityAssociation) MarshalBinary() ([]byte, error) {

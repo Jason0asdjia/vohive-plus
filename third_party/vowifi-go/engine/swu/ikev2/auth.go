@@ -127,6 +127,8 @@ type FullAuthResult struct {
 	IdentityExchanges        []EAPIdentityExchange
 	AKAChallenges            []AKAChallengeResult
 	ChildSA                  *ChildSAResult
+	FinalAuthRequestBytes    []byte
+	FinalAuthResponseBytes   []byte
 	EAPKeys                  eapaka.Keys
 	EAPLast                  *eapaka.Packet
 	EAPNotifications         []eapaka.Packet
@@ -315,7 +317,30 @@ func RunIKE_AUTH_Full(ctx context.Context, cfg FullAuthConfig) (FullAuthResult, 
 				out.ChildSA = &child
 				return out, nil
 			}
-			return out, fmt.Errorf("%w: EAP success without CHILD_SA", ErrInvalidAuthResponse)
+			finalAuth, err := runIKEAuthFinalAUTH(ctx, finalAuthConfig{
+				Transport:   cfg.Transport,
+				Init:        cfg.Init,
+				Keys:        cfg.Keys,
+				EAPKeys:     out.EAPKeys,
+				InitiatorID: cfg.InitiatorID,
+				MessageID:   out.NextMessageID,
+				Random:      cfg.Random,
+			})
+			if err != nil {
+				return FullAuthResult{}, err
+			}
+			out.FinalAuthRequestBytes = append([]byte(nil), finalAuth.RequestBytes...)
+			out.FinalAuthResponseBytes = append([]byte(nil), finalAuth.ResponseBytes...)
+			out.FinalResponseBytes = append([]byte(nil), finalAuth.ResponseBytes...)
+			out.FinalResponseInner = clonePayloads(finalAuth.ResponseInner)
+			out.NextMessageID = finalAuth.NextMessageID
+			if child, ok, err := parseChildSAIfPresent(cfg.Init, out.FinalResponseInner, localChildSPI, out.NextMessageID); err != nil {
+				return FullAuthResult{}, err
+			} else if ok {
+				out.ChildSA = &child
+				return out, nil
+			}
+			return out, fmt.Errorf("%w: final AUTH response without CHILD_SA%s", ErrInvalidAuthResponse, authPayloadSummary(out.FinalResponseInner))
 		}
 		if next.Code == eapaka.CodeFailure {
 			return out, fmt.Errorf("%w: EAP failure", ErrInvalidAuthResponse)
@@ -414,6 +439,105 @@ func RunIKE_AUTH_Full(ctx context.Context, cfg FullAuthConfig) (FullAuthResult, 
 		next = challenge.EAPNext
 	}
 	return out, fmt.Errorf("%w: too many IKE_AUTH EAP exchanges", ErrInvalidAuthResponse)
+}
+
+type finalAuthConfig struct {
+	Transport   InitTransport
+	Init        InitResult
+	Keys        IKEKeys
+	EAPKeys     eapaka.Keys
+	InitiatorID Identity
+	MessageID   uint32
+	Random      io.Reader
+	IV          []byte
+}
+
+type finalAuthExchangeResult struct {
+	RequestBytes  []byte
+	ResponseBytes []byte
+	ResponseInner []Payload
+	NextMessageID uint32
+}
+
+func runIKEAuthFinalAUTH(ctx context.Context, cfg finalAuthConfig) (finalAuthExchangeResult, error) {
+	if cfg.Transport == nil {
+		return finalAuthExchangeResult{}, fmt.Errorf("%w: transport is nil", ErrInvalidAuthConfig)
+	}
+	if cfg.MessageID == 0 {
+		return finalAuthExchangeResult{}, fmt.Errorf("%w: final AUTH message_id is zero", ErrInvalidAuthConfig)
+	}
+	keys := cfg.Keys
+	if keys.Profile.RequiredLength() == 0 {
+		keys = cfg.Init.Keys
+	}
+	if err := validateKeySet(keys); err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	authPayload, err := BuildIKEAuthFinalPayload(cfg.Init, keys, cfg.EAPKeys, cfg.InitiatorID)
+	if err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	iv, err := authIV(cfg.Random, keys.Profile, cfg.IV)
+	if err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	_, reqBytes, err := ProtectMessage(authHeader(cfg.Init, cfg.MessageID, true), keys, true, []Payload{authPayload}, iv)
+	if err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	respBytes, err := cfg.Transport.ExchangeIKE(ctx, reqBytes)
+	if err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	_, inner, err := unprotectAuthResponse(respBytes, cfg.Init, keys, cfg.MessageID)
+	if err != nil {
+		return finalAuthExchangeResult{}, err
+	}
+	return finalAuthExchangeResult{
+		RequestBytes:  append([]byte(nil), reqBytes...),
+		ResponseBytes: append([]byte(nil), respBytes...),
+		ResponseInner: clonePayloads(inner),
+		NextMessageID: cfg.MessageID + 1,
+	}, nil
+}
+
+func BuildIKEAuthFinalPayload(init InitResult, keys IKEKeys, eapKeys eapaka.Keys, initiatorID Identity) (Payload, error) {
+	if len(eapKeys.MSK) == 0 {
+		return Payload{}, fmt.Errorf("%w: MSK is empty", ErrInvalidAuthConfig)
+	}
+	if len(init.RequestBytes) == 0 {
+		return Payload{}, fmt.Errorf("%w: IKE_SA_INIT request is empty", ErrInvalidAuthConfig)
+	}
+	if len(init.NonceR) == 0 {
+		return Payload{}, fmt.Errorf("%w: responder nonce is empty", ErrInvalidAuthConfig)
+	}
+	if len(keys.SKPi) == 0 {
+		return Payload{}, fmt.Errorf("%w: SK_pi is empty", ErrInvalidAuthConfig)
+	}
+	if keys.Profile.PRF == 0 {
+		return Payload{}, fmt.Errorf("%w: PRF is unavailable", ErrInvalidAuthConfig)
+	}
+	idBody, err := initiatorID.MarshalBinary()
+	if err != nil {
+		return Payload{}, err
+	}
+	authKey, err := PRF(keys.Profile.PRF, eapKeys.MSK, []byte("Key Pad for IKEv2"))
+	if err != nil {
+		return Payload{}, err
+	}
+	idHash, err := PRF(keys.Profile.PRF, keys.SKPi, idBody)
+	if err != nil {
+		return Payload{}, err
+	}
+	signedOctets := make([]byte, 0, len(init.RequestBytes)+len(init.NonceR)+len(idHash))
+	signedOctets = append(signedOctets, init.RequestBytes...)
+	signedOctets = append(signedOctets, init.NonceR...)
+	signedOctets = append(signedOctets, idHash...)
+	authData, err := PRF(keys.Profile.PRF, authKey, signedOctets)
+	if err != nil {
+		return Payload{}, err
+	}
+	return AuthPayload(AuthMethodSharedKey, authData), nil
 }
 
 func authPayloadSummary(payloads []Payload) string {

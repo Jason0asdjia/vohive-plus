@@ -15,6 +15,10 @@ const (
 )
 
 const (
+	AuthMethodSharedKey uint8 = 2
+)
+
+const (
 	NotifyNoProposalChosen          uint16 = 14
 	NotifyInvalidKEPayload          uint16 = 17
 	NotifyUnacceptableAddresses     uint16 = 40
@@ -92,6 +96,13 @@ func NotifyPayload(n Notify) (Payload, error) {
 		return Payload{}, err
 	}
 	return Payload{Type: PayloadNotify, Body: body}, nil
+}
+
+func AuthPayload(method uint8, authData []byte) Payload {
+	body := make([]byte, 4+len(authData))
+	body[0] = method
+	copy(body[4:], authData)
+	return Payload{Type: PayloadAUTH, Body: body}
 }
 
 type Delete struct {

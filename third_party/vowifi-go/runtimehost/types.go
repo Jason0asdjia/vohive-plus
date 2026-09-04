@@ -1228,7 +1228,7 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 			TUN:                 swu.TUNDeviceConfig{Name: strings.TrimSpace(req.Dataplane.TUNName)},
 			DisableRouting:      req.Dataplane.DisableTUNRouting,
 			DefaultRoutes:       true,
-			ProtectEPDGRoutes:   true,
+			ProtectEPDGRoutes:   !proxyEnabledForSWU(req.Proxy),
 			MTU:                 req.Dataplane.TUNMTU,
 			Addresses:           append([]string(nil), req.Dataplane.TUNAddresses...),
 			EPDGRouteExclusions: cloneRuntimeEPDGRouteExclusions(req.Dataplane.TUNEPDGExclusions),
@@ -1236,6 +1236,13 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 			Rules:               append([]swu.TUNRule(nil), req.Dataplane.TUNRules...),
 		},
 	), nil
+}
+
+func proxyEnabledForSWU(proxy *ProxyConfig) bool {
+	if proxy == nil || !proxy.Enabled {
+		return false
+	}
+	return firstRuntimeNonEmpty(proxy.URL, proxy.Address, proxy.Addr) != ""
 }
 
 func cloneRuntimeEPDGRouteExclusions(in []swu.EPDGRouteExclusion) []swu.EPDGRouteExclusion {

@@ -199,3 +199,7 @@
 - `desktop/scripts/sync-backend-resource.mjs` 只能刷新已存在的 Tauri target 资源目录。用户已经删除 `target/debug` 时，同步脚本不能为了“保险”重新创建 debug，否则会让磁盘体积反弹，也可能再次制造桌面端部署旧资源的问题。
 - 部署脚本里用 `pkill -f` 时不能匹配会出现在当前 bash `-lc` 命令行里的宽泛字符串，否则可能把自己的部署脚本一并杀掉；应使用锚定真实进程命令行的模式或先收集 PID 再逐个处理。
 - WSL 后端启动必须以 `/opt/vohive` 为工作目录。只传 `-c /opt/vohive/config/config.yaml` 还不够，数据库、缓存等相对路径会落到当前目录，可能导致 SQLite 打开失败。
+- IKE_AUTH 返回 `payloadTypes=[41] notifyTypes=[14]` 时，Notify 14 是 `NO_PROPOSAL_CHOSEN`，应优先检查 IKE_AUTH 内 Child SA/ESP proposal、TSi/TSr，而不是继续把问题归到 EAP 身份、SIM 或代理超时。
+- 移植 collection/Orson 的 ESP proposal 不能只照抄列表。AES-GCM 属于 AEAD，需要 Child SA key profile、ESP nonce/salt/AAD/tag 和 XFRM/用户态数据面一起支持；在本项目只完整支持 CBC+HMAC 时，默认 proposal 只能声明实际可承载的 CBC-SHA256/CBC-SHA1。
+- IKE_AUTH 报 `EAP success without CHILD_SA` 时，不应把 EAP Success 当作最终成功包直接要求 Child SA；部分 ePDG 会先返回 EAP Success，再要求客户端发送 final `SK { AUTH }`，下一包才携带 `AUTH + SA + CP + TS`。修复前必须对照完整状态机并补红测。
+- 启用 VoWiFi 前置代理时，IKE/ESP 外层出口是 SOCKS5 UDP relay，不是 ePDG 直连；此时不能再把 ePDG 保护路由绑定到模组网卡 `wwan0`。VoWiFi 启动会断蜂窝数据并进入飞行模式，`wwan0` 可能 down，继续 `ip route add ePDG/32 dev wwan0` 会把已经成功的隧道建立误判成路由失败。

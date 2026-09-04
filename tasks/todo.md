@@ -1174,3 +1174,81 @@
 - [x] DEPLOY：已重新编译 Linux amd64 后端，正确注入 `Version=1.0.5` 和 `BuildTime=2026-09-04T08:45:56Z`；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `ab32bd1c42c4cb2c4058217150d0bb8be23754a864d503eaa6310d778416fefb`。
 - [x] DEPLOY：WSL 后端已按桌面壳同款 `/opt/vohive` 工作目录重启，当前进程 PID `14966`，`/ping` 返回 `{"message":"pong"}`；登录后 `/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T08:45:56Z`。
 - [x] NOTE：首次同步 release target 时 Windows 返回过 `EBUSY`，重试后成功；未发现 `vohive-plus-desktop.exe` 进程，后续若复现应优先查残留文件句柄或短暂扫描锁。
+
+### 2026-09-04 ESP/Child SA proposal 兼容性补齐
+
+- [x] 根因调查：最新截图错误为 `payloadTypes=[41] notifyTypes=[14]`，其中 Notify 14 是 `NO_PROPOSAL_CHOSEN`，已推进到 IKE_AUTH 内 Child SA/ESP proposal 被 ePDG 拒绝的阶段。
+- [x] 对照结论：`hzlmy2002/vohive-collection` 默认 ESP proposal 包含 `AES-GCM-256`、`AES-GCM-128`、`AES-CBC-128 + SHA256`、`AES-CBC-128 + SHA1`；本项目当前只发送 `AES-CBC-128 + SHA256`。
+- [x] RED：新增测试，要求默认 ESP proposal 至少覆盖本项目数据面已支持的 `AES-CBC-128 + SHA256` 和 `AES-CBC-128 + SHA1`，并确认不会发送尚未实现数据面的 GCM proposal。
+- [x] GREEN：将 `DefaultESPProposal` 扩为 CBC-SHA256 与 CBC-SHA1 两个 proposal。
+- [x] VERIFY：运行 `ikev2`、`swu`、`runtimehost`、`internal/device` 相关 Go 测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署到 WSL 并核对 WSL 运行体版本和 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestDefaultESPProposalOffersSupportedCBCFallbacks` 先失败于缺少 `AES-CBC-128 + SHA1` fallback，错误输出显示默认 ESP 只有一个 `AES-CBC-128 + SHA256` proposal。
+- [x] 2026-09-04 GREEN：`DefaultESPProposal` 已扩展为两个本项目 ESP 数据面可承载的 proposal：`AES-CBC-128 + SHA256` 与 `AES-CBC-128 + SHA1`；测试同时确认尚未发送 AES-GCM，避免 ePDG 选中后本地 ESP AEAD 数据面无法处理。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -count=1` 通过；`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64` 与 WSL `/opt/vohive/bin/vohive` SHA256 均为 `daec4d942044393965f237ae8c1795c8c00ef394d7eb6287fb55371ca21738d1`，`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已重启，PID `16972`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T09:27:12Z`。
+
+## 阶段 6U：EAP Success 后 final AUTH 缺失
+
+### 根因调查
+
+- [x] 最新截图错误变为 `SWU tunnel establishment failed: invalid ikev2 auth response: EAP success without CHILD_SA`。
+- [x] WSL 日志确认当前运行体为刚部署的 Plus 后端：PID `16972`，`vohive-plus`，SHA256 `daec4d942044393965f237ae8c1795c8c00ef394d7eb6287fb55371ca21738d1`。
+- [x] 对照 `hzlmy2002/vohive-collection`：EAP Success 后若最终响应缺少 Child SA，会发送 `SK { AUTH }` final AUTH，再解析下一包 `AUTH + SA + CP + TS`。
+- [x] 本项目当前 `RunIKE_AUTH_Full` 在 `EAP Success` 且未见 `PayloadSA` 时直接返回 `EAP success without CHILD_SA`，缺少 final AUTH 往返。
+
+### 实施计划
+
+- [x] RED：新增测试模拟 `EAP Success` 不带 Child SA，要求客户端继续发送 `PayloadAUTH`。
+- [x] GREEN：新增 AUTH payload 编码与 final AUTH 计算，`RunIKE_AUTH_Full` 在 EAP Success 后自动发 final AUTH 并解析 Child SA。
+- [x] VERIFY：运行 `ikev2`、`swu`、`runtimehost`、`internal/device` 相关 Go 测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署 WSL 并核对版本与 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestRunIKEAuthFullSendsFinalAUTHAfterEAPSuccessWithoutChildSA` 先失败于旧实现直接返回 `invalid ikev2 auth response: EAP success without CHILD_SA`。
+- [x] 2026-09-04 GREEN：`RunIKE_AUTH_Full` 在收到 EAP Success 但响应中没有 Child SA 时，已改为基于 MSK、首包 IKE_SA_INIT 请求、Responder Nonce 和 `SK_pi/IDi` 计算 final AUTH，并继续发送 `SK { AUTH }` 后解析最终 Child SA。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -run TestRunIKEAuthFullSendsFinalAUTHAfterEAPSuccessWithoutChildSA -count=1` 通过。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `17f48320ca1a88ebbb0b851d35895a115b7c1925b9accf99239380508b493b7a`；`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已按 `/opt/vohive` 工作目录重启，当前进程 PID `18274`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T09:49:24Z`。
+
+## 阶段 6V：VoWiFi 代理模式下 TUN 路由保护误绑 wwan0
+
+### 根因调查
+
+- [x] 用户截图显示最新失败点为 `invalid swu tun routing: ip route add 88.82.11.208/32 dev wwan0: ... Device for nexthop is not up`。
+- [x] 代码确认：`runtimehost.defaultTunnelManagerForStart` 始终开启 `ProtectEPDGRoutes=true`；`buildTunnelConfig` 又把 `cfg.LocalInterface` 设置为 `modem.DeviceID()`，当前即 `wwan0`。
+- [x] VoWiFi 启动前会断开数据连接并进入飞行模式以禁用原生 IMS，`wwan0` 在此阶段可能 down；同时启用 SOCKS5 UDP 国家代理时，IKE/ESP 外层包目标是代理 relay，不是 ePDG 直连，因此给 ePDG 加 `dev wwan0` 保护路由既不必要也会失败。
+
+### 实施计划
+
+- [x] RED：新增 runtimehost 单测，要求启用且有地址的前置代理时，默认 TUN 管理器不再启用 ePDG 到 `wwan0` 的自动保护。
+- [x] GREEN：只在无前置代理时保留 `ProtectEPDGRoutes=true`；有代理时跳过自动 ePDG 保护。
+- [x] VERIFY：运行 `runtimehost` 与相关 `swu`/`internal/device` 回归测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署 WSL 并核对版本与 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestDefaultTunnelManagerSkipsEPDGRouteProtectionWhenProxyEnabled` 先失败于代理模式下 `ProtectEPDGRoutes=true`，会继续尝试把 ePDG 主机路由加到 `wwan0`。
+- [x] 2026-09-04 GREEN：`defaultTunnelManagerForStart` 已改为仅在没有启用前置代理时自动保护 ePDG 路由；启用 SOCKS5 UDP 代理时不再生成 `dev wwan0` 的 ePDG 保护路由。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/runtimehost -run TestDefaultTunnelManagerSkipsEPDGRouteProtectionWhenProxyEnabled -count=1` 通过。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `41ae93401b8c829fde7209509e31843253084e8d9e7be5fce659a566922e3a07`；`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已按 `/opt/vohive` 工作目录重启，当前进程 PID `19281`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T10:13:23Z`。当前设备 `wwan0` 仍在线，`vowifi_enabled=false` 等待用户手动重试。
+
+## 阶段 6W：准备 VoHive Plus 1.0.6 本地提交
+
+### 实施记录
+
+- [x] 按语义化版本规则将本轮 WiFi Calling 兼容性修复升级为 patch 版本 `1.0.6`。
+- [x] 更新 `desktop/package.json`、`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/Cargo.lock`、Release workflow 默认版本和 README 当前版本引用。
+- [x] 新增 `.github/release-notes/v1.0.6.md`，按 `origin/main` 之后的提交和当前未提交修复整理 1.0.6 更新内容。
+- [x] VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs` 19 项通过。
+- [x] VERIFY：`pnpm --dir desktop build` 通过。
+- [x] VERIFY：`node -e` 校验 `desktop/package.json` 与 `desktop/src-tauri/tauri.conf.json` JSON 格式通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
