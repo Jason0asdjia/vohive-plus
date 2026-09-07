@@ -14,6 +14,10 @@ const suggestedAdminCommand = ref('')
 
 const targetDevice = computed(() => status.value?.devices.find((d) => d.is_target))
 const healthText = computed(() => status.value?.health.ok ? '正常' : status.value?.health.message || '未知')
+const selectedBackendVariant = computed(() => {
+  const current = status.value?.selected_backend_variant
+  return status.value?.backend_variants.find((variant) => variant.id === current)
+})
 
 async function refresh(clearNotice = true) {
   if (clearNotice) {
@@ -47,6 +51,11 @@ async function runAction(name: string, fn: () => Promise<ActionResult>) {
   } finally {
     busy.value = ''
   }
+}
+
+async function setBackendVariant(event: Event) {
+  const target = event.target as HTMLSelectElement
+  await runAction('选择后端', () => runtimeService.setBackendVariant(target.value))
 }
 
 onMounted(async () => {
@@ -91,6 +100,24 @@ onMounted(async () => {
 
       <div class="panel">
         <h2>后端</h2>
+        <label class="field">
+          <span>运行体</span>
+          <select
+            :value="status.selected_backend_variant"
+            :disabled="!!busy"
+            @change="setBackendVariant"
+          >
+            <option
+              v-for="variant in status.backend_variants"
+              :key="variant.id"
+              :value="variant.id"
+            >
+              {{ variant.name }} {{ variant.version }}
+            </option>
+          </select>
+        </label>
+        <div v-if="selectedBackendVariant" class="hint">{{ selectedBackendVariant.description }}</div>
+        <div class="hint">三者共享 7575 端口，切换前请先停止后端。VoCat 首次部署密码见诊断日志。</div>
         <div class="row"><span>进程</span><b>{{ status.backend.running ? '运行中' : '未运行' }}</b></div>
         <div v-if="status.backend.message" class="hint">{{ status.backend.message }}</div>
         <div class="row"><span>健康检查</span><b>{{ healthText }}</b></div>

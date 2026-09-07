@@ -125,13 +125,13 @@ pub fn terminate_distro(timeout: Duration) -> std::io::Result<std::process::Outp
     run_output_with_timeout(DEFAULT_WSL, &terminate_args(), timeout)
 }
 
-pub fn vohive_backend_pids(timeout: Duration) -> Result<Vec<u32>, String> {
+pub fn managed_backend_pids(timeout: Duration) -> Result<Vec<u32>, String> {
     if !should_probe_backend_pids(current_distro_running()?) {
         return Ok(Vec::new());
     }
 
     let output = run_root_shell_timeout(
-        "pgrep -f '^/opt/vohive/bin/vohive( |$)' || true",
+        "{ pgrep -f '^/opt/vohive/bin/vohive( |$)' || true; pgrep -f '^/opt/vocat/bin/vocat( |$)' || true; } | sort -u",
         timeout,
     )
     .map_err(|err| err.to_string())?;

@@ -619,6 +619,9 @@ func TestStartEstablishesTunnelWhenManagerProvided(t *testing.T) {
 	if manager.config.EPDGAddress != "epdg.example" || manager.config.Identity.Domain != "one.att.net" {
 		t.Fatalf("tunnel config=%+v", manager.config)
 	}
+	if manager.config.APN != "ims" {
+		t.Fatalf("tunnel APN=%q, want ims", manager.config.APN)
+	}
 }
 
 func TestStartBuildsTunnelManagerForExplicitUserspaceDataplane(t *testing.T) {
@@ -727,6 +730,34 @@ func TestDefaultTunnelManagerForStartEnablesTUNRoutingProtection(t *testing.T) {
 	}
 	if len(tunManager.Config.Routes) != 1 || tunManager.Config.Routes[0].Table != "200" {
 		t.Fatalf("routes=%+v", tunManager.Config.Routes)
+	}
+}
+
+func TestDefaultTunnelManagerSkipsEPDGRouteProtectionWhenProxyEnabled(t *testing.T) {
+	manager, err := defaultTunnelManagerForStart(StartRequest{
+		DeviceID: "dev-1",
+		SIM:      &runtimeSIMAdapter{},
+		Dataplane: DataplanePolicy{
+			Mode:    swu.DataplaneModeUserspace,
+			TUNName: "vohive0",
+		},
+		Proxy: &ProxyConfig{
+			Addr:    "127.0.0.1:10808",
+			Enabled: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("defaultTunnelManagerForStart() error = %v", err)
+	}
+	tunManager, ok := manager.(*swu.TUNTunnelManager)
+	if !ok {
+		t.Fatalf("manager=%T, want *swu.TUNTunnelManager", manager)
+	}
+	if !tunManager.Config.DefaultRoutes {
+		t.Fatalf("DefaultRoutes=false, want true")
+	}
+	if tunManager.Config.ProtectEPDGRoutes {
+		t.Fatalf("ProtectEPDGRoutes=true with proxy enabled; would add ePDG route via modem interface")
 	}
 }
 

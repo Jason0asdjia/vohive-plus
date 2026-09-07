@@ -1,10 +1,11 @@
 {
   "name": "vohive-plus-desktop",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.7",
   "type": "module",
   "scripts": {
     "sync:backend": "node scripts/sync-backend-resource.mjs",
+    "sync:vocat": "node scripts/sync-vocat-resource.mjs",
     "dev": "vite --host 127.0.0.1 --port 5176",
     "build": "vue-tsc --noEmit && vite build",
     "tauri": "tauri"

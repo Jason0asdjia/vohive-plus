@@ -3,6 +3,7 @@
 ## 当前决策
 
 - 源码基线：采用 `windloom/vohive-open`，不再以 `openvohive/openvohive` 作为主线。
+- 运行体选择：VoCat、本项目 VoHive Plus、`iniwex5/vohive` 备份运行体是三选一关系，不做同时运行；VoHive Plus 与 `iniwex5/vohive` 共用 `/opt/vohive`，VoCat 使用 `/opt/vocat`。当前 `iniwex5/vohive` 备份运行体资源取自 Vohive-155/Orson 镜像来源；VoCat 由桌面 Release Action 拉取 `MengMengCode/VoCat` latest release。
 - 运行路线：同时推进两条正式路线。
   - 路线 A：WSL2 运行路线。不是临时验证，而是可交付运行方式之一，优先利用当前机器已有 WSL2 快速跑通。
   - 路线 B：VirtualBox Headless + 最小 Debian。作为更可控、可封装的 VM 运行路线。
@@ -21,6 +22,46 @@
   - 轻量优先：Tauri + WebView2。
   - 开发速度优先：Electron。
   - 原生优先：C# WPF/WinUI。
+
+## 阶段 4J：`/opt/vohive` 唯一活动槽位语义
+
+### 目标
+
+- [x] 明确 VoCat 不进入 `/opt/vohive`，使用独立 `/opt/vocat`。
+- [x] 本项目 VoHive Plus 与 `iniwex5/vohive` 备份运行体共用 `/opt/vohive` 作为唯一活动槽位，用户选择哪个运行体，哪个占用该槽位。
+- [x] 桌面壳启动后端时，如果 7575 已有运行中的未标记 `/opt/vohive` 后端，不静默复用；提示先停止再启动，让桌面壳重新部署并写入运行体标记。
+
+### 实施计划
+
+- [x] RED：补充桌面壳单元测试，验证未标记运行中后端即使选择默认 VoHive Plus 也会被视为需要停止/接管。
+- [x] GREEN：调整 `start_backend` 的运行体检查，运行中的未标记后端一律提示停止后再启动。
+- [x] 文档：在 README 中补充 `/opt/vohive` 是 VoHive Plus 与 `iniwex5/vohive` 的共用槽位，VoCat 使用 `/opt/vocat`，三者不做并存运行；桌面 Release 下载并打包 VoCat latest，固定版本的 `iniwex5/vohive` 备份运行体资源取自 Vohive-155/Orson 镜像。
+- [x] 验证：运行 `cargo test commands::`，13 项桌面命令相关测试通过。
+
+## 阶段 4K：桌面端纳入 VoCat 运行体并在 Release 拉取 latest
+
+### 目标
+
+- [x] 桌面端运行体下拉新增 VoCat，形成 VoHive Plus、`iniwex5/vohive`、VoCat 三选一。
+- [x] VoHive Plus 与 `iniwex5/vohive` 仍部署到 `/opt/vohive`；VoCat 部署到 `/opt/vocat`。
+- [x] GitHub Action 发布桌面包时拉取 `MengMengCode/VoCat` latest release 的 Linux amd64 二进制并校验 `SHA256SUMS`。
+- [x] 桌面包内包含 `resources/vocat/vocat-linux-amd64` 和 `resources/vocat/VOCAT_VERSION`，用于部署和显示实际打包版本。
+- [x] 启动任一运行体前仍按 7575 单端口三选一处理，不允许静默复用不同运行体。
+
+### 实施计划
+
+- [x] RED：补充 release workflow 测试，要求 Action 解析 VoCat latest release、下载 `vocat-linux-amd64` 与 `SHA256SUMS`、校验后打进 `resources/vocat/`。
+- [x] RED：补充 Tauri bundle 测试，要求 `resources/vocat/*` 进入桌面资源。
+- [x] RED：补充运行体测试，要求 variants 包含 VoCat，部署脚本写入 `/opt/vocat`，启动命令使用 `/opt/vocat/bin/vocat serve`。
+- [x] GREEN：更新 `.github/workflows/binary-release.yml`、`desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/src/backend_variants.rs`、`desktop/src-tauri/src/commands.rs`、桌面 UI 文案和 README。
+- [x] VERIFY：运行桌面 Node 测试、Rust `commands::`/`backend_variants::` 测试，并检查文档中 VoCat 打包语义一致。
+
+### 评审记录
+
+- [x] 2026-09-07 RED：`node --test desktop\tests\releaseWorkflow.test.mjs desktop\tests\noInstallerBundle.test.mjs desktop\tests\wslStartUi.test.mjs` 先失败于缺少 VoCat latest 下载步骤和 `resources/vocat/*` 打包配置；`cargo test commands::tests::backend_variants_include_default_iniwex_backup_and_vocat_runtime` 先失败于缺少 `VARIANT_VOCAT` 和 VoCat 启动参数。
+- [x] 2026-09-07 GREEN：新增 VoCat 运行体，部署到 `/opt/vocat`，启动命令为 `VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db /opt/vocat/bin/vocat serve`；停止/状态探测同时覆盖 `/opt/vohive` 与 `/opt/vocat`。
+- [x] 2026-09-07 GREEN：Release workflow 使用 GitHub Releases API 解析 `MengMengCode/VoCat` latest release，从同一份 release 元数据下载 `vocat-linux-amd64` 和 `SHA256SUMS`，校验后写入 `resources/vocat/VOCAT_VERSION` 并打进便携包。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 25 项通过；`cargo test` 39 项通过；`pnpm --dir desktop build` 通过；同时暴露出本地 `pnpm --dir desktop sync:vocat` 在未提供本地 VoCat 二进制时只跳过不联网，后续已在阶段 6X 修复为 latest 下载或明确失败。
 
 ## 阶段 1：源码基线落地
 
@@ -979,3 +1020,300 @@
 - [x] 2026-08-28 阶段 6O 验证：`go test ./internal/device ./internal/api -count=1` 通过；`cargo test --manifest-path desktop/src-tauri/Cargo.toml` 28 项通过；`npm run test --prefix web` 31 项通过；`node --test tests/*.test.mjs desktop/tests/*.test.mjs` 22 项通过。
 - [x] 2026-08-28 阶段 6O 构建：`npm run build --prefix web` 通过，已同步 `web/dist` 到 `internal/web/dist`；Linux amd64 后端 `dist/vohive-open_linux_amd64` SHA256 为 `319D6A60F55F23EBBEFCDB0849DEFAECC33E0C1EA2B3EE7613F9EFCC51B978B6`；桌面 release exe SHA256 为 `232518B9843419062E0C3C11CC25F0B56296C9C0B52FFBD7BC73A8516E9FD075`。
 - [x] 2026-08-28 阶段 6O 提交准备：按语义化版本规则升级到 `1.0.5`，源码、测试、文档、发布说明和本地构建验证已准备完成；推送 `main` 后由 Release workflow 发布。
+
+## 阶段 6P：VoWiFi 国家前置代理命中后仍直连 ePDG
+
+### 根因调查
+
+- [x] 2026-09-03 当前 WSL 运行后端中，`uk` 前置代理保存为 `127.0.0.1:10808`，后端自检 `SOCKS5 UDP Associate` 通过。
+- [x] 2026-09-03 当前 SIM IMSI 为 `23415...`，SIM 归属 MCC 为 `234`，国家规则 `GB -> uk` 已启用，日志已出现 `VoWiFi 国家前置代理已命中`。
+- [x] 2026-09-03 失败日志仍为 `read udp 192.168.0.123:xxxxx->ePDG:4500: i/o timeout`；源码确认 `TunnelConfig.Proxy` 只被传入 SWU 配置，`IKEPacketTunnelManager` 的 IKE/ESP transport 仍直接使用 `net.Dialer.DialContext(ctx, "udp", remote)`，代理没有实际接管数据面。
+
+### 实施步骤
+
+- [x] RED：补充 SWU 单测，要求启用 `TunnelConfig.Proxy` 后 IKE transport 和 ESP transport 都通过 SOCKS5 UDP relay，而不是直连 ePDG；旧实现复现为 `read udp 192.168.0.123:xxxxx->203.0.113.9:4500: i/o timeout`。
+- [x] GREEN：实现 SOCKS5 UDP Associate transport，并在 `IKEPacketTunnelManager` 命中代理时使用它；未配置代理时保持原直连逻辑。
+- [x] GREEN：代理 transport 的 TCP 握手、用户名密码鉴权、UDP Associate、UDP frame 编解码和关闭逻辑均在 SWU 层内聚处理。
+- [x] VERIFY：运行 `go test ./third_party/vowifi-go/engine/swu -run "TestIKEPacketTunnelManagerUsesSOCKS5UDPProxy" -count=1`，通过。
+- [x] VERIFY：运行 `go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1`，通过。
+- [x] DEPLOY：重新编译 Linux 后端 `dist/vohive-open_linux_amd64`，SHA256 为 `6fe6fc0778df5da4982f912902572ff6818101fbc2430e054a86591863aca209`；已备份旧 WSL 后端到 `/opt/vohive/bin/vohive.bak-20260903171220`，覆盖 `/opt/vohive/bin/vohive` 并重启。
+
+### 评审记录
+
+- 2026-09-03 阶段 6P 部署验证：WSL `/ping` 返回 `pong`，新后端进程 PID 为 `15003`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-03T09:10:45Z`。
+- 2026-09-03 部署后实机重试：日志从旧的 `read udp 192.168.0.123:xxxxx->ePDG:4500` 变为 `read udp 127.0.0.1:47536->127.0.0.1:60281`，说明 SWU 已改走 SOCKS5 UDP relay，不再直连 ePDG。
+- 2026-09-03 剩余风险：新的超时发生在 v2rayN 返回的本地 UDP relay 上；后续需验证 WSL mirrored 对 Windows 动态 UDP loopback relay 的转发能力，或改用 `hostAddressLoopback=true` 后通过 Windows IPv4 地址访问 v2rayN，再判断远端节点是否真正转发 UDP 4500。
+- 2026-09-03/04 `hostAddressLoopback=true` 已确认必须放在 `.wslconfig` 的 `[experimental]` 下；重启 WSL 后，WSL 内通过 `127.0.0.1:10808` 跑 SOCKS5 UDP live DNS 测试可收到响应，说明 WSL 到 v2rayN 的 UDP relay 数据面已打通。`192.168.0.123:10808` 入口当前会 `connection refused`，不要把它作为稳定配置。
+- 2026-09-03 实机继续启用 VoWiFi 仍在 SWU 阶段超时，但失败后发现模块停在 `AT+CFUN: 4`、`CREG/CEREG/CGREG=0`、`QNWINFO=No Service`；根因是启动失败恢复只在需要恢复数据网络时才执行 `SetOperatingMode(Online)`，数据网络关闭时会把射频留在飞行模式。
+- 2026-09-03 已补 RED 测试 `TestHandleVoWiFiStartupErrorRestoresRadioWithoutDataRestoreIntent`，并将失败恢复拆分为“总是恢复射频”和“按需恢复数据连接”；目标测试与 `go test ./internal/device ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost -count=1` 已通过。
+
+## 阶段 6Q：VOXI/Vodafone UK VoWiFi IKE 行为对齐
+
+### 根因调查
+
+- [x] 2026-09-04 用户重启 v2rayN 后，WSL 内通过 `127.0.0.1:10808` 对 `1.1.1.1:53`、`8.8.8.8:53`、`208.67.222.222:53` 的 SOCKS5 UDP DNS live 测试均通过，说明当前普通 UDP relay 已恢复。
+- [x] 2026-09-04 WSL 内通过同一 `127.0.0.1:10808` 查询出口，结果为 `45.154.205.76 / GB / London / AS136258 BrainStorm Network`，说明当前 TCP 出口地理国家为英国。
+- [x] 2026-09-04 `epdg.epc.mnc015.mcc234.pub.3gppnetwork.org` 解析到 `148.252.188.96`、`88.82.11.221`、`88.82.11.208`，与 LOWERTOP/Shadowrocket-First 的 UK WiFi Calling 规则中 Vodafone IP 段方向一致。
+- [x] 2026-09-04 同一代理下测试 Vodafone ePDG `88.82.11.221:4500`、`88.82.11.208:4500`、`148.252.188.96:4500` 与 `88.82.11.221:500`，当前自造 IKE_SA_INIT 均为超时。
+- [x] 2026-09-04 对 `88.82.11.221:4500` 连续 6 次 IKE_SA_INIT 探针，6 次均超时，未复现“多次后偶发成功”。
+- [x] 2026-09-04 参考 Shadowrocket UK 规则的价值已确认：它证明手机代理场景需要代理 UDP 500/4500、Vodafone/VOXI 相关域名和 IP 段；但它是手机分流规则，不包含 ePDG/IKE 报文参数，不能直接解释当前 IKE_INIT 无响应。
+- [x] 当前 VoHive 启动时序与朋友 iPhone 成功路径不同：VoHive 先在蜂窝已驻网状态读取身份，然后断开数据连接并切 `CFUN=4`，默认等待约 `500ms` 后发起 SWU；朋友路径是手机先飞行模式，再通过代理 WiFi 发起 WiFi Calling。
+- [ ] 需要进一步验证：启动前“预飞行/等待蜂窝完全脱网”的时序是否影响 Vodafone ePDG 对首包 IKE_INIT 的响应；虽然 IKE_SA_INIT 阶段尚未携带 IMSI/EAP 身份，但本地模组、SIM 应用状态、NAT-D 地址和源端口行为可能与手机路径不同。
+
+### 可选方案
+
+- 推荐方案 A：增加 VoWiFi SWU 启动诊断重试。
+  - 对每个 ePDG 候选 IP 做可配置次数的 IKE_SA_INIT 重试和短退避，记录每次目标 IP、端口、DH group、是否使用 Non-ESP marker、代理 relay、本地端口和错误。
+  - 优点：直接覆盖“朋友多次才成功”的现实特征，也能收集更完整证据。
+  - 风险：如果 IKE 报文本身不对，重试只会更慢，不能根治。
+- 备选方案 B：增加“飞行优先启动”实验开关。
+  - 在正式 SWU 前先切 `CFUN=4`，轮询 `CREG/CEREG/CGREG` 到未注册或超时，再发起 IKE；失败后总是恢复射频。
+  - 优点：更接近 iPhone 的先飞行模式路径。
+  - 风险：会增加启动耗时，且如果问题在 IKE proposal/Vendor ID，仍不会成功。
+- 备选方案 C：扩展 IKE_SA_INIT 报文兼容性。
+  - 支持一次请求内多 proposal、更多 DH group/算法组合、Vendor ID/NAT-T 行为开关，并用 live 探针逐项验证。
+  - 优点：更接近真正根因方向。
+  - 风险：没有 iPhone 抓包对照时容易盲试，需要严格按测试和日志收敛。
+
+### 推荐设计
+
+- [ ] 先做方案 A + B 的最小可控实现：默认行为保持现状，只新增实验配置或调试参数，不影响普通用户。
+- [ ] `IKEPacketTunnelManager` 支持对候选 ePDG 的多轮重试，错误信息聚合到最后失败原因中。
+- [ ] VoWiFi 启动准备层增加可选“飞行预热等待”，在切 `CFUN=4` 后等待注册状态退出蜂窝，再开始 SWU。
+- [ ] Web/桌面日志展示中保留每次尝试摘要，避免用户只看到最后一个 `i/o timeout`。
+- [ ] 若 A/B 仍不响应，再进入方案 C：优先找 iPhone 成功抓包对照；没有抓包时只把 proposal/Vendor ID 做成诊断实验，不直接替换生产默认。
+
+### 验证标准
+
+- [ ] 单测先复现：默认只尝试每个候选一次；开启重试后应按候选和次数调用 InitRunner，并保留最后错误。
+- [ ] 单测先复现：开启飞行预热后应等待注册状态脱网或超时，且失败路径必须恢复射频。
+- [ ] live 验证：同一 `127.0.0.1:10808` 代理下记录 DNS UDP、出口国家、三个 ePDG IP、多次 IKE 尝试结果。
+- [ ] 实机验证：启动失败后不再停留在 `CFUN=4`/未驻网，成功或失败都能从 UI 看出真实尝试次数和最后失败层级。
+
+## 阶段 6R：Orson-Yan/Vohive-155 二进制 A/B 对照验证
+
+### 根因调查
+
+- [x] `Orson-Yan/Vohive-155` 是二进制发布仓库，`release/` 内含 `vohive_v1.5.5-10-gf9eb85d_linux_amd64`，不是完整源码仓库。
+- [x] 已下载 Linux amd64 二进制到 `.tmp/vohive_orson_linux_amd64`，SHA256 为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] Orson 二进制支持 `-c` 和 `-backend-only`，但不支持本项目新增的 `-prepare-usb`，不能作为完整 Windows 桌面后端替换。
+- [x] 二进制字符串检查未发现 `upstream-proxy`、国家规则或 `SOCKS5 UDP` 数据面相关能力；若用 Orson 验证 WiFi Calling，必须确保 WSL 整体 UDP 500/4500 出口由 v2rayN/TUN/系统路由接管，否则与本项目的前置代理路径不可比。
+
+### 实施步骤
+
+- [x] 不覆盖 `/opt/vohive` 正式后端；创建 `/opt/vohive-orson` 独立目录。
+- [x] 停止当前 `/opt/vohive/bin/vohive`，避免两个后端同时抢占 USB/AT/QMI。
+- [x] 复制 Orson Linux amd64 二进制到 `/opt/vohive-orson/bin/vohive`。
+- [x] 复制当前配置到 `/opt/vohive-orson/config/config.yaml`，只改监听端口为 `:17575`。
+- [x] 启动 Orson 后端并验证 `http://127.0.0.1:17575/ping`。
+- [x] 通过 Orson API 触发 `PATCH /api/devices/wwan0/vowifi`，记录成功/失败和日志。
+
+### 验证标准
+
+- [x] Orson 后端与本项目后端不能同时运行。
+- [x] Orson Web 能打开，默认账号密码 `admin/admin` 可登录。
+- [x] 设备能被 Orson 后端识别并控制。
+- [x] 若 Orson 能拉起 WiFi Calling，需要记录当时的网络出口、v2rayN 模式、ePDG 目标和日志，作为回到本项目修复 IKE/SWU 的证据。
+- [ ] 若 Orson 失败，需要确认它是否实际走 UK 代理/UDP 500/4500；否则不能把失败归因于 SIM 或运营商。
+
+### 评审记录
+
+- [x] 2026-09-04 WSL TUN 出口验证：`curl https://ipinfo.io/json` 返回 `45.154.205.76 / GB / London / AS136258 BrainStorm Network`；USB `2ca3:4006 Baiwang` 在 `usbipd` 中为 `Attached`，WSL 内 `lsusb` 可见。
+- [x] 2026-09-04 Orson 对照后端启动：独立运行于 `/opt/vohive-orson`，监听 `:17575`，`/ping` 返回 `pong`，默认 `admin/admin` 登录成功，设备 `wwan0` online。
+- [x] 2026-09-04 Orson VoWiFi 实机结果：`PATCH /api/devices/wwan0/vowifi` 返回成功，运行态 `phase=sms_ready`、`tunnel_ready=true`、`ims_ready=true`、`sms_ready=true`。
+- [x] 2026-09-04 Orson 成功日志关键差异：ePDG 对首轮 IKE 返回 `preferred_group=2`，Orson 重新发起 SA_INIT，并回落到 `sha1_legacy` / `MODP_1024`；随后 EAP-AKA、Child SA、IMS REGISTER 成功。该证据强烈指向本项目当前 IKE/SWU 报文兼容性问题，而不是 SIM、节点或运营商不可用。
+
+## 阶段 6S：桌面壳支持 `iniwex5/vohive` 备份运行体部署
+
+### 设计
+
+- [x] 桌面壳默认仍部署本项目后端 `vohive-open_linux_amd64`，新增 `iniwex5/vohive v1.5.5` 备份运行体选项；当前二进制资源取自 Vohive-155/Orson 镜像来源。
+- [x] 备份运行体只作为诊断和回退运行体，不能替代本项目的 `vohive-usb-prepare.sh`；WSL USB 准备仍使用本项目脚本。
+- [x] 选择项保存到桌面壳本地配置文件；用户下次打开仍保留上次选择，无效旧配置自动回退本项目默认后端。
+- [x] UI 必须显示当前选择和差异提示：备份运行体可用于 WiFi Calling 对照，但不包含本项目新增的 WSL USB prepare 参数和 SOCKS5 UDP 前置代理能力；后续阶段 4K 已将 VoCat 纳入桌面壳管理，部署到 `/opt/vocat` 并与 `/opt/vohive` 运行体三选一。
+
+### 实施计划
+
+- [x] RED：新增桌面资源同步测试，要求脚本能同步主后端和 `iniwex5/vohive` 备份运行体。
+- [x] GREEN：扩展 `desktop/scripts/sync-backend-resource.mjs`，同步 `vohive-open_linux_amd64` 和 `vohive-orson-v1.5.5_linux_amd64`；后者保持历史资源文件名，但用户可见名称为 `iniwex5/vohive`。
+- [x] RED：新增 Rust 单测，要求资源校验能按 variant 选择对应二进制，且提示缺失的备用资源名。
+- [x] GREEN：新增 `BackendVariant` 模型和选择命令，`install_or_import` 根据选中的 variant 部署对应二进制。
+- [x] RED：新增桌面 UI/service 测试，要求界面暴露备用后端选择能力。
+- [x] GREEN：更新 `desktop/src/App.vue`、`desktop/src/services/runtime.ts`、`desktop/src/types/runtime.ts`，支持选择备用后端并在后端面板展示说明。
+- [x] GREEN：新增桌面本地配置读写，`set_backend_variant` 保存选择，桌面启动时读取并校验已保存的运行体。
+- [x] GREEN：部署时额外复制本项目后端到 `/opt/vohive/bin/vohive-plus`，并让 `vohive-usb-prepare.sh` 固定调用它，避免 `iniwex5/vohive` 备份运行体缺少 `--prepare-usb` 破坏 USB 准备。
+- [x] GREEN：Release workflow 从 `desktop/vendor/vohive-backends/` 复制固定版本的 Linux amd64 备份运行体资源并打入桌面便携包；后续阶段 4K 已新增 VoCat latest 下载和打包。
+- [x] GREEN：Release workflow 对 `iniwex5/vohive` 备份运行体执行 SHA256 强校验，期望值为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] GREEN：将固定版本的 `iniwex5/vohive` 备份运行体二进制放入 `desktop/vendor/vohive-backends/`；Release workflow 从 vendor 复制到 Tauri 资源目录并校验 SHA256，不再每次访问外部 raw URL 下载。
+- [x] GREEN：WSL 部署时写入 `/opt/vohive/config/desktop-backend-variant`；后端健康但已部署运行体与当前选择不一致时，启动按钮提示先停止再启动，不再复用旧进程。
+- [x] GREEN：主后端下拉版本从 Rust crate 版本读取，避免后续发版时继续显示旧版本号。
+- [x] VERIFY：运行桌面 Node 测试和 Rust 测试。
+- [x] VERIFY：重新同步桌面资源，确认两个 Linux 后端二进制都存在于 `desktop/src-tauri/resources/vohive/`。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`node --test desktop\tests\syncBackendResource.test.mjs` 先失败于同步脚本不支持 Orson 备用后端；`node --test desktop\tests\wslStartUi.test.mjs` 先失败于 UI/service 没有后端选择入口。
+- [x] 2026-09-04 VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs` 17 项通过。
+- [x] 2026-09-04 VERIFY：`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 29 项通过。
+- [x] 2026-09-04 VERIFY：`pnpm --dir desktop build` 通过。
+- [x] 2026-09-04 资源同步：`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-orson-v1.5.5_linux_amd64` 均已由同步脚本生成；两个大二进制继续由 `.gitignore` 排除，发布包由 CI/构建脚本生成。
+- [x] 2026-09-04 代码审查跟进：修复运行体选择持久化、Release 备份运行体 SHA256 校验、主后端版本硬编码、健康检查误复用旧运行体；官方 release workflow 负责强制打包和校验备用资源。
+- [x] 2026-09-07 命名和发布边界调整：用户可见名称统一为 `iniwex5/vohive` 备份运行体，Vohive-155/Orson 仅作为镜像来源说明；后续阶段 4K 已确认桌面端可选 VoCat，并由 Release Action 拉取 VoCat latest 打包。
+- [x] 2026-09-07 vendor 固定化：`desktop/vendor/vohive-backends/iniwex5-vohive-v1.5.5-10-gf9eb85d_linux_amd64` 已入库作为 Action 输入，SHA256 为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`；Action 发布时复制并校验，不再从外部 raw URL 下载该备份运行体。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs desktop\tests\syncBackendResource.test.mjs` 20 项通过；`cargo test commands::` 13 项通过；`cargo test backend_variants::` 3 项通过；vendor 备份运行体 SHA256 与固定校验值一致。
+
+## 阶段 6T：对比 hzlmy2002/vohive-collection 的可合并能力
+
+### 根因调查
+
+- [x] 2026-09-04 用户通过桌面端重试后仍报 `SWU tunnel establishment failed: read udp 127.0.0.1:47958->127.0.0.1:59568: i/o timeout`；应用日志显示当前运行体曾在 14:08 完成 `INVALID_KE_PAYLOAD preferred_group=2`、回落 `sha1_legacy/MODP_1024` 并进入 `Child SA`，说明上一轮 SA_INIT 修复方向有效，当前失败已推进到后续 IKE_AUTH/会话/代理重试层。
+- [x] 2026-09-04 重新核对运行体：WSL `/opt/vohive/bin/vohive` SHA256 为 `76cf1bd218c9d24b2e26060ad2e919788918ac00f820405ece4070636806f621`，而本项目 `dist/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 均为 `651e02a5dd87383e2ff6aaff9ea9d8ddd4fbe3bba604096e788bbf830addffa7`；差异来自桌面端使用 Tauri `target/*/resources/vohive/` 中的旧资源重新部署。
+- [x] RED：为桌面后端资源同步脚本增加回归测试，要求同步源码资源目录的同时，也同步已构建桌面工具运行时会读取的 `src-tauri/target/debug/resources/vohive/` 与 `src-tauri/target/release/resources/vohive/`。
+- [x] GREEN：修改同步脚本，让每次重新编译后端并执行 `pnpm sync:backend` 时，当前 debug/release 桌面工具下一次部署也能拿到同一个 Linux 后端二进制。
+- [x] DEPLOY：执行同步脚本，核对 `dist`、`src-tauri/resources`、`target/debug/resources`、`target/release/resources` 四处主后端 SHA256 一致后，再覆盖 WSL `/opt/vohive/bin/vohive` 并重启。
+- [x] 2026-09-04 已克隆 `hzlmy2002/vohive-collection` 到 `.tmp/vohive-collection`，当前对照提交为 `0c3052c`；该仓库是源码快照集合，包含 `vohive`、`vowifi-go`、`swu-go`、`quectel-qmi-go`、`uicc-go`、`euicc-go`、`netlink`、`qqbot` 等。
+- [x] 2026-09-04 本项目已先提交保存：`209e5b9 修复 VoWiFi 代理数据面并支持备用后端`；当前本地 `main` 相对 `origin/main` 为 ahead 1。
+- [x] 2026-09-04 `third_party/quectel-qmi-go` 与 collection 的 `quectel-qmi-go` 内容差异只集中在 `go.mod/go.sum`，当前 QMI/短信问题不应优先通过整体替换 QMI 库解决。
+- [x] 2026-09-04 collection 的 `vowifi-go` 通过 `replace github.com/iniwex5/swu-go => ../swu-go` 使用独立 `swu-go`；本项目则在 `third_party/vowifi-go/engine/swu` 内实现 SWU/IKE，不能直接覆盖目录。
+- [x] 2026-09-04 collection `swu-go/pkg/swu/state_init.go`、`swu-go/pkg/ikev2/proposal_match.go` 明确包含多 proposal、`INVALID_KE_PAYLOAD` preferred group、COOKIE、REDIRECT、IKE Fragmentation、DPD/MOBIKE/滑动窗口重传等能力。
+- [x] 2026-09-04 本项目当前 `third_party/vowifi-go/engine/swu/ikev2/init.go` 默认 `DefaultIKEProposal()` 仍是单 proposal，默认 DH 是 Curve25519；仅看到 MODP 2048 支持，未看到 MODP 1024/1536、首轮 COOKIE、REDIRECT、IKE Fragmentation 的完整 SA_INIT 重协商实现。
+- [x] 2026-09-04 collection 有运营商 preset 框架与 YAML，如 `three_uk_234020.yaml`、`giffgaff_23410.yaml`、`vodafone_nl_20404.yaml`；未看到 VOXI/Vodafone UK `23415` 专用 preset，不能直接声称可搬配置解决 VOXI。
+
+### 结论
+
+- [x] P1：本项目当前最可能的真实缺口是 SWU/IKE 兼容性，不是 SIM、代理、WSL USB 或 QMI 库。Orson 对照成功日志里的 `preferred_group=2`、`sha1_legacy`、`MODP_1024` 与 collection `swu-go` 的能力一致。
+- [x] P1：下一步应测试驱动移植 `INVALID_KE preferred_group=2` 后重发 SA_INIT、MODP 1024、legacy SHA1 proposal、多 proposal 协商。
+- [x] P2：在 P1 打通后，再考虑移植 COOKIE、REDIRECT、IKE Fragmentation、DPD/重传窗口；这些更偏复杂网络环境和稳定性。
+- [x] P2：运营商 preset 机制值得借鉴，但要先补 VOXI/Vodafone UK `23415` 的实测配置承载点，不能直接套用 collection 现有 UK preset。
+- [x] P3：collection 的 `cscall`、`sipgw`、`sms/poller.go`、`modem/urc_listener.go` 属于功能增强或备用路径，和当前 WiFi Calling 拉起失败不是同一优先级，不建议现在大块合并。
+
+### 下一步建议
+
+- [x] RED：为本项目 `RunIKE_SA_INIT` 增加 `INVALID_KE_PAYLOAD` 响应测试，模拟 ePDG 返回 preferred group 2，要求重新生成 DH 并重发 SA_INIT；旧实现失败于把错误响应解析成普通成功响应并报 `responder SPI is zero`。
+- [x] GREEN：新增 MODP 1024/1536 常量、密钥生成和共享密钥计算，优先确保 MODP 1024 + SHA1 legacy 组合可完成本地协议测试。
+- [x] GREEN：新增默认多 proposal，覆盖 SHA2/MODP2048、SHA1/MODP1024、SHA1/MODP1536 和原 Curve25519 兼容项。
+- [x] GREEN：扩展 live IKE 探针参数，支持 `VOHIVE_LIVE_IKE_DH_GROUP=modp1024|modp1536`。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu -count=1` 通过。
+- [x] VERIFY：2026-09-04 复跑 `./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1`，四个包通过，其中 `internal/device` 用时约 57 秒。
+- [x] DEPLOY：2026-09-04 已用项目内 Go 工具链重新编译 Linux amd64 后端 `dist/vohive-open_linux_amd64`，版本注入 `1.0.5`；本地产物与 WSL `/opt/vohive/bin/vohive` SHA256 均为 `651e02a5dd87383e2ff6aaff9ea9d8ddd4fbe3bba604096e788bbf830addffa7`。
+- [x] DEPLOY：2026-09-04 已按桌面壳同样方式以 WSL root 启动 `/opt/vohive/bin/vohive -c /opt/vohive/config/config.yaml`，当前进程 PID `4630`，`/ping` 返回 `{"message":"pong"}`。
+- [x] VERIFY：2026-09-04 `node --test desktop\tests\syncBackendResource.test.mjs` 5 项通过；`pnpm sync:backend` 已把主后端同步到 `desktop/src-tauri/resources/vohive/`、`desktop/src-tauri/target/debug/resources/vohive/`、`desktop/src-tauri/target/release/resources/vohive/`，四处 SHA256 一致。
+- [ ] VERIFY：复跑 WSL 代理国家出口、SOCKS5 UDP DNS live、Vodafone ePDG IKE live 探针，再用本项目后端实机启用 VOXI WiFi Calling。本轮尝试执行 live 探针时审批层返回 usage limit 拒绝，未绕过执行。
+- [ ] 后续：P1 仍失败时，再逐个补 COOKIE、REDIRECT、IKE Fragmentation、DPD/窗口重传，避免一次性搬完整 `swu-go` 引入不可控回归。
+
+### 2026-09-04 IKE_AUTH 首包兼容性补齐
+
+- [x] 根因调查：用户截图中的当前 Plus 失败点为 `SWU tunnel establishment failed: invalid ikev2 auth response: IKE_AUTH did not complete EAP`；这说明 UDP 代理和 SA_INIT 已推进到 IKE_AUTH 层，但 ePDG 没有进入 EAP-AKA。
+- [x] 对照结论：`hzlmy2002/vohive-collection` 的 `swu-go/pkg/swu/state_auth.go` 在 IKE_AUTH 首包中发送 `IDi -> IDr -> CP -> SA -> TSi -> TSr -> EAP_ONLY_AUTHENTICATION -> MOBIKE_SUPPORTED -> TICKET_REQUEST -> INITIAL_CONTACT`；本项目旧实现缺少 `IDr` 和这些 VoWiFi 兼容 Notify。
+- [x] RED：新增 IKE_AUTH 失败诊断测试，要求无 EAP 响应时错误必须带 `payloadTypes`/`notifyTypes` 摘要；旧实现只返回 `IKE_AUTH did not complete EAP`。
+- [x] RED：新增 SWU/runtimehost APN 传递测试，要求 `TunnelConfig.APN=ims` 最终进入 `FullAuthConfig.ResponderID=ID_FQDN ims`；旧实现没有 APN 字段，编译失败。
+- [x] RED：新增桌面资源同步测试，要求 `target/debug` 不存在时 `pnpm sync:backend` 不得重新创建 debug 资源目录；旧实现会无条件 `mkdirSync`。
+- [x] GREEN：`BuildIKEAuthInitialPayloads` 已补齐 `IDr`、`EAP_ONLY_AUTHENTICATION`、`TICKET_REQUEST`、`INITIAL_CONTACT`，并保留 `MOBIKE_SUPPORTED`；`RunIKE_AUTH_Full` 在未进入 EAP 时输出响应 payload/notify 摘要。
+- [x] GREEN：`swu.TunnelConfig` 增加 VoWiFi IMS APN，`runtimehost` 默认传入 `ims`，`IKEPacketTunnelManager` 从该字段构造 responder identity，避免底层只靠硬编码。
+- [x] GREEN：`desktop/scripts/sync-backend-resource.mjs` 只刷新已经存在的 target 资源目录；用户已删除的 `target/debug` 不再被同步脚本重新创建。
+- [x] VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs` 6 项通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost -count=1` 通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./internal/device -count=1` 通过，用时约 57 秒。
+- [x] DEPLOY：已重新编译 Linux amd64 后端，正确注入 `Version=1.0.5` 和 `BuildTime=2026-09-04T08:45:56Z`；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `ab32bd1c42c4cb2c4058217150d0bb8be23754a864d503eaa6310d778416fefb`。
+- [x] DEPLOY：WSL 后端已按桌面壳同款 `/opt/vohive` 工作目录重启，当前进程 PID `14966`，`/ping` 返回 `{"message":"pong"}`；登录后 `/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T08:45:56Z`。
+- [x] NOTE：首次同步 release target 时 Windows 返回过 `EBUSY`，重试后成功；未发现 `vohive-plus-desktop.exe` 进程，后续若复现应优先查残留文件句柄或短暂扫描锁。
+
+### 2026-09-04 ESP/Child SA proposal 兼容性补齐
+
+- [x] 根因调查：最新截图错误为 `payloadTypes=[41] notifyTypes=[14]`，其中 Notify 14 是 `NO_PROPOSAL_CHOSEN`，已推进到 IKE_AUTH 内 Child SA/ESP proposal 被 ePDG 拒绝的阶段。
+- [x] 对照结论：`hzlmy2002/vohive-collection` 默认 ESP proposal 包含 `AES-GCM-256`、`AES-GCM-128`、`AES-CBC-128 + SHA256`、`AES-CBC-128 + SHA1`；本项目当前只发送 `AES-CBC-128 + SHA256`。
+- [x] RED：新增测试，要求默认 ESP proposal 至少覆盖本项目数据面已支持的 `AES-CBC-128 + SHA256` 和 `AES-CBC-128 + SHA1`，并确认不会发送尚未实现数据面的 GCM proposal。
+- [x] GREEN：将 `DefaultESPProposal` 扩为 CBC-SHA256 与 CBC-SHA1 两个 proposal。
+- [x] VERIFY：运行 `ikev2`、`swu`、`runtimehost`、`internal/device` 相关 Go 测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署到 WSL 并核对 WSL 运行体版本和 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestDefaultESPProposalOffersSupportedCBCFallbacks` 先失败于缺少 `AES-CBC-128 + SHA1` fallback，错误输出显示默认 ESP 只有一个 `AES-CBC-128 + SHA256` proposal。
+- [x] 2026-09-04 GREEN：`DefaultESPProposal` 已扩展为两个本项目 ESP 数据面可承载的 proposal：`AES-CBC-128 + SHA256` 与 `AES-CBC-128 + SHA1`；测试同时确认尚未发送 AES-GCM，避免 ePDG 选中后本地 ESP AEAD 数据面无法处理。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -count=1` 通过；`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64` 与 WSL `/opt/vohive/bin/vohive` SHA256 均为 `daec4d942044393965f237ae8c1795c8c00ef394d7eb6287fb55371ca21738d1`，`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已重启，PID `16972`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T09:27:12Z`。
+
+## 阶段 6U：EAP Success 后 final AUTH 缺失
+
+### 根因调查
+
+- [x] 最新截图错误变为 `SWU tunnel establishment failed: invalid ikev2 auth response: EAP success without CHILD_SA`。
+- [x] WSL 日志确认当前运行体为刚部署的 Plus 后端：PID `16972`，`vohive-plus`，SHA256 `daec4d942044393965f237ae8c1795c8c00ef394d7eb6287fb55371ca21738d1`。
+- [x] 对照 `hzlmy2002/vohive-collection`：EAP Success 后若最终响应缺少 Child SA，会发送 `SK { AUTH }` final AUTH，再解析下一包 `AUTH + SA + CP + TS`。
+- [x] 本项目当前 `RunIKE_AUTH_Full` 在 `EAP Success` 且未见 `PayloadSA` 时直接返回 `EAP success without CHILD_SA`，缺少 final AUTH 往返。
+
+### 实施计划
+
+- [x] RED：新增测试模拟 `EAP Success` 不带 Child SA，要求客户端继续发送 `PayloadAUTH`。
+- [x] GREEN：新增 AUTH payload 编码与 final AUTH 计算，`RunIKE_AUTH_Full` 在 EAP Success 后自动发 final AUTH 并解析 Child SA。
+- [x] VERIFY：运行 `ikev2`、`swu`、`runtimehost`、`internal/device` 相关 Go 测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署 WSL 并核对版本与 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestRunIKEAuthFullSendsFinalAUTHAfterEAPSuccessWithoutChildSA` 先失败于旧实现直接返回 `invalid ikev2 auth response: EAP success without CHILD_SA`。
+- [x] 2026-09-04 GREEN：`RunIKE_AUTH_Full` 在收到 EAP Success 但响应中没有 Child SA 时，已改为基于 MSK、首包 IKE_SA_INIT 请求、Responder Nonce 和 `SK_pi/IDi` 计算 final AUTH，并继续发送 `SK { AUTH }` 后解析最终 Child SA。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 -run TestRunIKEAuthFullSendsFinalAUTHAfterEAPSuccessWithoutChildSA -count=1` 通过。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `17f48320ca1a88ebbb0b851d35895a115b7c1925b9accf99239380508b493b7a`；`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已按 `/opt/vohive` 工作目录重启，当前进程 PID `18274`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T09:49:24Z`。
+
+## 阶段 6V：VoWiFi 代理模式下 TUN 路由保护误绑 wwan0
+
+### 根因调查
+
+- [x] 用户截图显示最新失败点为 `invalid swu tun routing: ip route add 88.82.11.208/32 dev wwan0: ... Device for nexthop is not up`。
+- [x] 代码确认：`runtimehost.defaultTunnelManagerForStart` 始终开启 `ProtectEPDGRoutes=true`；`buildTunnelConfig` 又把 `cfg.LocalInterface` 设置为 `modem.DeviceID()`，当前即 `wwan0`。
+- [x] VoWiFi 启动前会断开数据连接并进入飞行模式以禁用原生 IMS，`wwan0` 在此阶段可能 down；同时启用 SOCKS5 UDP 国家代理时，IKE/ESP 外层包目标是代理 relay，不是 ePDG 直连，因此给 ePDG 加 `dev wwan0` 保护路由既不必要也会失败。
+
+### 实施计划
+
+- [x] RED：新增 runtimehost 单测，要求启用且有地址的前置代理时，默认 TUN 管理器不再启用 ePDG 到 `wwan0` 的自动保护。
+- [x] GREEN：只在无前置代理时保留 `ProtectEPDGRoutes=true`；有代理时跳过自动 ePDG 保护。
+- [x] VERIFY：运行 `runtimehost` 与相关 `swu`/`internal/device` 回归测试。
+- [x] DEPLOY：重新编译 Linux 后端，同步桌面资源，部署 WSL 并核对版本与 SHA256。
+
+### 评审记录
+
+- [x] 2026-09-04 RED：`TestDefaultTunnelManagerSkipsEPDGRouteProtectionWhenProxyEnabled` 先失败于代理模式下 `ProtectEPDGRoutes=true`，会继续尝试把 ePDG 主机路由加到 `wwan0`。
+- [x] 2026-09-04 GREEN：`defaultTunnelManagerForStart` 已改为仅在没有启用前置代理时自动保护 ePDG 路由；启用 SOCKS5 UDP 代理时不再生成 `dev wwan0` 的 ePDG 保护路由。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/runtimehost -run TestDefaultTunnelManagerSkipsEPDGRouteProtectionWhenProxyEnabled -count=1` 通过。
+- [x] 2026-09-04 VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+- [x] 2026-09-04 DEPLOY：重新编译 Linux amd64 后端并同步桌面资源；`dist/vohive-open_linux_amd64`、`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64`、`desktop/src-tauri/target/release/resources/vohive/vohive-open_linux_amd64`、WSL `/opt/vohive/bin/vohive`、WSL `/opt/vohive/bin/vohive-plus` 的 SHA256 均为 `41ae93401b8c829fde7209509e31843253084e8d9e7be5fce659a566922e3a07`；`desktop/src-tauri/target/debug` 仍不存在。
+- [x] 2026-09-04 DEPLOY：WSL 后端已按 `/opt/vohive` 工作目录重启，当前进程 PID `19281`，`/ping` 返回 `{"message":"pong"}`；`/api/system/info` 返回 `version=1.0.5`、`build_time=2026-09-04T10:13:23Z`。当前设备 `wwan0` 仍在线，`vowifi_enabled=false` 等待用户手动重试。
+
+## 阶段 6W：准备 VoHive Plus 1.0.6 本地提交
+
+### 实施记录
+
+- [x] 按语义化版本规则将本轮 WiFi Calling 兼容性修复升级为 patch 版本 `1.0.6`。
+- [x] 更新 `desktop/package.json`、`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/Cargo.lock`、Release workflow 默认版本和 README 当前版本引用。
+- [x] 新增 `.github/release-notes/v1.0.6.md`，按 `origin/main` 之后的提交和当前未提交修复整理 1.0.6 更新内容。
+- [x] VERIFY：`node --test desktop\tests\syncBackendResource.test.mjs desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs` 19 项通过。
+- [x] VERIFY：`pnpm --dir desktop build` 通过。
+- [x] VERIFY：`node -e` 校验 `desktop/package.json` 与 `desktop/src-tauri/tauri.conf.json` JSON 格式通过。
+- [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+
+## 阶段 6X：准备 VoHive Plus 1.0.7 本地提交
+
+### 实施计划
+
+- [x] 将桌面端、Tauri/Rust crate、Release workflow 默认版本和 README 当前发布引用从 `1.0.6` 升级到 `1.0.7`。
+- [x] 新增 `.github/release-notes/v1.0.7.md`，承载本轮 VoCat 与 `iniwex5/vohive` 打包策略说明。
+- [x] VERIFY：复跑桌面 Node 测试、Rust 测试和桌面构建。
+- [x] REVIEW：对当前未提交变更进行代码审查，记录阻塞问题和建议。
+
+### 评审记录
+
+- [x] 2026-09-07 VERSION：已将桌面端版本、Tauri/Rust crate 版本、Release workflow 默认值、README 当前产物引用升级到 `1.0.7`，并新增 `.github/release-notes/v1.0.7.md`。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 26 项通过；`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 41 项通过；`pnpm --dir desktop build` 通过；`node -e` 校验桌面 JSON 配置解析通过。
+- [x] 2026-09-07 REVIEW：发现 2 个发布前应处理的问题：VoCat 首次部署缺少管理员 bootstrap 流程；桌面包重新分发 VoCat 和 vendored `iniwex5/vohive` 二进制时缺少随包 LICENSE/NOTICE 记录。
+- [x] 2026-09-07 FIX：VoCat 首次部署会在空数据库时执行 `bootstrap-admin` 并记录初始密码；Release workflow 会下载 VoCat LICENSE，`resources/vohive/THIRD_PARTY_BINARY_NOTICES.md` 记录第三方二进制来源；健康检查已补充 VoCat `/healthz` 响应识别。
+- [x] 2026-09-07 FIX：本地 `sync:vocat` 原先在没有 `VOHIVE_VOCAT_SOURCE` 且资源目录缺少 `vocat-linux-amd64` 时会跳过下载，导致本地 `pnpm --dir desktop tauri build` 无法把 VoCat 放入资源目录；现已改为优先复用本地资源，其次拉取 `MengMengCode/VoCat` latest release 并校验 `SHA256SUMS`，如果 GitHub 不可达则软跳过，让本地构建继续并在日志中提示 VoCat 未打包。
+- [x] 2026-09-07 FIX：桌面窗口关闭后进程可能残留为无窗口后台进程，导致后续 release 编译无法替换 `target/release/vohive-plus-desktop.exe`；已在 Tauri run event 层处理窗口关闭/销毁和无窗口状态，退出前释放桌面壳持有的 WSL 后端与保活子进程。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 27 项通过；`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 43 项通过；`pnpm --dir desktop build` 通过；`node --test desktop\tests\syncVocatResource.test.mjs` 覆盖本地复制、latest 下载和 GitHub 不可达软跳过三条路径。
+- [x] 2026-09-07 VERIFY：用户手动放入 `desktop/src-tauri/resources/vocat/vocat-linux-amd64` 后，真实执行 `pnpm --dir desktop sync:vocat` 复用本地资源；`pnpm --dir desktop tauri build` 成功，生成 `desktop/src-tauri/target/release/vohive-plus-desktop.exe`，修改时间 `2026/9/7 15:07:34`，大小 `8,828,928` 字节；`target/release/resources/vocat/` 已包含 `vocat-linux-amd64`，且编译后没有 `vohive-plus-desktop` 残留进程。

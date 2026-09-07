@@ -60,10 +60,13 @@ type IKEPacketTunnelManagerConfig struct {
 	LocalPort                uint16
 	RemotePort               uint16
 	UseNonESPMarker          bool
+	InitRetryAttempts        int
+	InitRetryDelay           time.Duration
 	EAPIdentity              string
 	Reauthentication         EAPReauthenticationState
 	OnReauthenticationState  func(EAPReauthenticationState)
 	InitiatorID              ikev2.Identity
+	ResponderID              ikev2.Identity
 	IKETransportFactory      IKETransportFactory
 	ESPTransportFactory      IKEESPTransportFactory
 	InitRunner               IKEInitRunner
@@ -131,6 +134,10 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 	if initiatorID.Type == 0 {
 		initiatorID = ikev2.Identity{Type: ikev2.IDRFC822Addr, Data: []byte(identity)}
 	}
+	responderID := m.Config.ResponderID
+	if responderID.Type == 0 {
+		responderID = responderIDForTunnel(cfg)
+	}
 	random := m.Config.Random
 	if random == nil {
 		random = rand.Reader
@@ -159,7 +166,7 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 			lastErr = err
 			continue
 		}
-		init, err := initRunner(ctx, ikev2.InitConfig{
+		init, err := m.runIKEInitWithRetry(ctx, initRunner, ikev2.InitConfig{
 			Transport:  transport,
 			Random:     random,
 			SA:         m.Config.SA,
@@ -183,6 +190,7 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 			SIM:                provider,
 			EAPKeys:            reauth.Keys,
 			InitiatorID:        initiatorID,
+			ResponderID:        responderID,
 			EAPIdentity:        identity,
 			EAPReauthIdentity:  reauth.Identity,
 			EAPReauthCounter:   reauth.Counter,
@@ -245,6 +253,47 @@ func (m *IKEPacketTunnelManager) EstablishTunnel(ctx context.Context, cfg Tunnel
 		lastErr = fmt.Errorf("%w: no usable ePDG candidate found", ErrInvalidIKETunnelManager)
 	}
 	return nil, lastErr
+}
+
+func (m *IKEPacketTunnelManager) runIKEInitWithRetry(ctx context.Context, runner IKEInitRunner, cfg ikev2.InitConfig) (ikev2.InitResult, error) {
+	attempts := m.Config.InitRetryAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		res, err := runner(ctx, cfg)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if attempt == attempts || ctxErr(ctx) != nil {
+			break
+		}
+		if delay := m.Config.InitRetryDelay; delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ikev2.InitResult{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = ctxErr(ctx)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%w: IKE_SA_INIT failed without error", ErrInvalidIKETunnelManager)
+	}
+	return ikev2.InitResult{}, lastErr
+}
+
+func ctxErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 func (m *IKEPacketTunnelManager) updateReauthenticationState(auth ikev2.FullAuthResult) {
@@ -337,6 +386,14 @@ func (m *IKEPacketTunnelManager) ikeTransport(cfg TunnelConfig, transportCfg IKE
 	if m.Config.IKETransportFactory != nil {
 		return m.Config.IKETransportFactory(cfg, transportCfg)
 	}
+	if socks5ProxyAddress(cfg.Proxy) != "" {
+		return &socks5UDPIKETransport{
+			Proxy:           cfg.Proxy,
+			RemoteAddr:      transportCfg.RemoteAddr,
+			Timeout:         transportCfg.Timeout,
+			UseNonESPMarker: transportCfg.UseNonESPMarker,
+		}, nil
+	}
 	return ikev2.UDPTransport{
 		RemoteAddr:      transportCfg.RemoteAddr,
 		LocalAddr:       transportCfg.LocalAddr,
@@ -351,6 +408,13 @@ func (m *IKEPacketTunnelManager) espTransport(cfg TunnelConfig, transportCfg ESP
 	}
 	if m.Config.ESPTransportFactory != nil {
 		return m.Config.ESPTransportFactory(cfg, transportCfg)
+	}
+	if socks5ProxyAddress(cfg.Proxy) != "" {
+		return &SOCKS5UDPESPPacketTransport{
+			Proxy:      cfg.Proxy,
+			RemoteAddr: transportCfg.RemoteAddr,
+			Timeout:    transportCfg.Timeout,
+		}, nil
 	}
 	return &UDPESPPacketTransport{
 		RemoteAddr: transportCfg.RemoteAddr,
@@ -656,6 +720,14 @@ func eapIdentityForTunnel(cfg TunnelConfig, override string) (string, error) {
 		prefix = "0"
 	}
 	return fmt.Sprintf("%s%s@nai.epc.mnc%s.mcc%s.3gppnetwork.org", prefix, raw, leftPadTunnel(mnc, 3), mcc), nil
+}
+
+func responderIDForTunnel(cfg TunnelConfig) ikev2.Identity {
+	apn := strings.TrimSpace(cfg.APN)
+	if apn == "" {
+		apn = "ims"
+	}
+	return ikev2.Identity{Type: ikev2.IDFQDN, Data: []byte(apn)}
 }
 
 func normalizeTunnelIdentity(identity string) string {

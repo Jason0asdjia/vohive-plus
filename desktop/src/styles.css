@@ -82,6 +82,24 @@ h2 {
   font-size: 14px;
 }
 
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #172033;
+  padding: 8px 10px;
+  font: inherit;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

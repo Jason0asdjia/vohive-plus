@@ -178,3 +178,31 @@
 - WSL `prepare-usb` 不能只写死当前截图里的单个 PID；Quectel 模组应按厂商 ID `2c7c:*` 支持，并按实际枚举到的 VID/PID 写入 `option1/new_id` 与 `qmi_wwan/new_id`。
 - `2ca3:4006` 是 DJI/Baiwang 伪装后的精确 ID，需要保留；桌面 `usbipd list` 还可用设备名包含 `Baiwang` 或 `Quectel` 做辅助识别。
 - 不要把 `05c6:*` 这类 Qualcomm 厂商 ID 无条件放进 prepare-usb 支持范围；里面可能包含下载/诊断模式，必须先结合运行拓扑或实机证据再扩展。
+
+## 2026-09-03 VoWiFi 前置代理数据面
+
+- VoWiFi 前置代理自检通过只说明后端能完成 SOCKS5 握手和 UDP Associate；不能据此推断 SWU/IKE 数据面已经使用代理。必须看 SWU transport 实现是否真正把 IKE_INIT 和 ESP/NAT-T UDP 包封装进 SOCKS5 UDP relay。
+- 日志出现 `VoWiFi 国家前置代理已命中` 后，如果错误仍是 `read udp 本机IP:端口->ePDG:4500`，要优先追 `TunnelConfig.Proxy` 到 IKE/ESP transport 的数据流，而不是继续让用户换代理地址。
+- `runtimehost.ProxyConfig` 和 `swu.ProxyConfig` 虽字段相同但属于不同包；传入配置后还要确认下游使用点，避免“配置字段存在但业务层完全忽略”的假阳性。
+- `.wslconfig` 的 `hostAddressLoopback=true` 属于 `[experimental]` 节点，不是 `[wsl2]`；修改后必须 `wsl --shutdown`，并且 WSL2 USB/IP 设备会被断开，需要重新 `usbipd attach` 和 `--prepare-usb`。
+- WSL mirrored 下不能只验证 SOCKS5 TCP 或 UDP Associate 握手；要用真实 UDP 请求验证 relay 能收到响应。本机启用 `hostAddressLoopback=true` 后，`127.0.0.1:10808` 的 SOCKS5 UDP DNS live 测试通过；Windows 主机 IPv4 `192.168.0.123:10808` 当前会 `connection refused`，不能作为稳定入口。
+- SOCKS5 UDP live DNS 只证明 UDP relay 可用，不等于 VoWiFi 目标国家链路可用；验证国家前置代理时必须继续确认 UDP 出口 IP 的地理国家/ASN，并用同一个代理出口对目标国家 ePDG 的 UDP 4500 跑 IKE_INIT 探针，避免“DNS 可通但出口国家或目标链路不符合”的误判。
+- VoWiFi 启动失败前会把模组切到 `CFUN=4` 以关闭原生 IMS；失败恢复射频不能依赖“数据网络恢复意图”。即使蜂窝数据本来关闭，也必须把射频恢复到 `ModeOnline`，数据连接是否重连再单独按原意图处理。
+- 手机代理/VPN/TUN + 热点给 iPhone 的成功路径，不能等同于 Windows v2rayN SOCKS5 UDP Associate 路径；即使节点和 SIM 相同，也要分别验证 WSL 到 v2rayN、v2rayN UDP relay、出口国家、ePDG IKE 响应四层。
+- Shadowrocket WiFi Calling 规则的直接价值是分流范围：UDP 500/4500、Vodafone/VOXI entitlement 域名、ePDG 域名和 IP 段；它不包含 iPhone 真实 IKE_SA_INIT proposal、Vendor ID、NAT-D、payload 顺序等协议细节，不能拿规则文本直接推断 SWU 实现正确。
+- IKE_SA_INIT 阶段尚未进入 EAP-AKA/IMS 身份认证，ePDG 通常只能看到源公网 IP、UDP 端口、IKE proposal、Vendor ID、NAT-D 等首包特征；“卡先在 CN 漫游驻网”更可能影响本地模组/SIM/启动时序，而不是让 ePDG 在首包阶段直接识别 IMSI。
+- 真实手机 WiFi Calling 可能多次尝试才成功，VoHive 不能只用一次 IKE_INIT 超时作为最终用户体验；应在诊断模式记录多次尝试、候选 ePDG IP 和每次错误，但不能把无限重试当成根因修复。
+- 桌面壳里的“后端运行体选择”是用户意图配置，不是一次性按钮状态；作为可部署备用后端时必须持久保存，并在读取到未知旧值时回退默认后端，避免重启应用后悄悄恢复到另一套运行体。
+- 后端重新编译后不能只更新 `dist/` 和 `desktop/src-tauri/resources/vohive/`；用户常用的本地桌面壳可能直接从 Tauri 已构建的 `desktop/src-tauri/target/{debug,release}/resources/vohive/` 部署后端。每次同步都要刷新源码资源和已存在/会被使用的 target 运行资源，并用 SHA256 核对 WSL `/opt/vohive/bin/vohive` 与桌面资源一致。
+- IKE_AUTH 报 `did not complete EAP` 时不能只看网络/代理；要解密响应后记录 `payloadTypes` 和 `notifyTypes`。如果 ePDG 返回的是 Notify 而不是 EAP，应优先对照首包 payload 顺序、`IDr`、`EAP_ONLY_AUTHENTICATION`、`TICKET_REQUEST`、`INITIAL_CONTACT` 等 VoWiFi 兼容项。
+- VoWiFi IKE_AUTH 的 responder identity 应来自明确的 IMS APN 配置，默认可为 `ims`；不要把它写成隐藏硬编码，也不要和普通蜂窝数据 APN 混为同一个用户策略字段。
+- `desktop/scripts/sync-backend-resource.mjs` 只能刷新已存在的 Tauri target 资源目录。用户已经删除 `target/debug` 时，同步脚本不能为了“保险”重新创建 debug，否则会让磁盘体积反弹，也可能再次制造桌面端部署旧资源的问题。
+- 部署脚本里用 `pkill -f` 时不能匹配会出现在当前 bash `-lc` 命令行里的宽泛字符串，否则可能把自己的部署脚本一并杀掉；应使用锚定真实进程命令行的模式或先收集 PID 再逐个处理。
+- WSL 后端启动必须以 `/opt/vohive` 为工作目录。只传 `-c /opt/vohive/config/config.yaml` 还不够，数据库、缓存等相对路径会落到当前目录，可能导致 SQLite 打开失败。
+- IKE_AUTH 返回 `payloadTypes=[41] notifyTypes=[14]` 时，Notify 14 是 `NO_PROPOSAL_CHOSEN`，应优先检查 IKE_AUTH 内 Child SA/ESP proposal、TSi/TSr，而不是继续把问题归到 EAP 身份、SIM 或代理超时。
+- 移植 collection/Orson 的 ESP proposal 不能只照抄列表。AES-GCM 属于 AEAD，需要 Child SA key profile、ESP nonce/salt/AAD/tag 和 XFRM/用户态数据面一起支持；在本项目只完整支持 CBC+HMAC 时，默认 proposal 只能声明实际可承载的 CBC-SHA256/CBC-SHA1。
+- IKE_AUTH 报 `EAP success without CHILD_SA` 时，不应把 EAP Success 当作最终成功包直接要求 Child SA；部分 ePDG 会先返回 EAP Success，再要求客户端发送 final `SK { AUTH }`，下一包才携带 `AUTH + SA + CP + TS`。修复前必须对照完整状态机并补红测。
+- 启用 VoWiFi 前置代理时，IKE/ESP 外层出口是 SOCKS5 UDP relay，不是 ePDG 直连；此时不能再把 ePDG 保护路由绑定到模组网卡 `wwan0`。VoWiFi 启动会断蜂窝数据并进入飞行模式，`wwan0` 可能 down，继续 `ip route add ePDG/32 dev wwan0` 会把已经成功的隧道建立误判成路由失败。
+- 桌面端本地构建和 GitHub Action 构建必须走同一类资源语义：第三方运行体缺失时不能静默跳过，否则本地 `tauri build` 会生成看似成功但缺资源的桌面包。同步脚本应明确复制本地源、下载并校验远程源，或带可操作兜底提示失败。
+- 对“可选第三方运行体”要区分本地开发体验和官方发布完整性：本地构建可在 GitHub 不可达时软跳过并汇总提示，官方 Release Action 仍应强制下载/校验/打包，避免正式产物缺资源。
+- Windows 桌面程序不能只假设关闭最后窗口就会退出进程。Tauri v2 桌面壳应在窗口关闭/销毁和无窗口事件循环状态下显式清理并退出，否则无窗口后台进程会锁住 release exe，让后续编译时间看起来“不更新”。

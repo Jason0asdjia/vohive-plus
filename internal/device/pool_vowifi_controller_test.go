@@ -203,6 +203,43 @@ func TestHandleVoWiFiStartupErrorAPDUBusyStaysBelowWarn(t *testing.T) {
 	}
 }
 
+func TestHandleVoWiFiStartupErrorRestoresRadioWithoutDataRestoreIntent(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+
+	backendStub := &workerStatusBackendStub{opMode: backend.ModeRFOff}
+	worker := &Worker{
+		ID:      "dev-restore-radio",
+		Backend: backendStub,
+		Config: config.DeviceConfig{
+			ID:              "dev-restore-radio",
+			VoWiFiEnabled:   true,
+			AirplaneEnabled: true,
+			NetworkEnabled:  false,
+		},
+	}
+
+	err := p.handleVoWiFiStartupError(
+		"trace-restore-radio",
+		"dev-restore-radio",
+		"",
+		0,
+		time.Now(),
+		worker,
+		runtimehost.State{},
+		errors.New("swu timeout"),
+	)
+	if err == nil {
+		t.Fatal("handleVoWiFiStartupError() error = nil, want startup error")
+	}
+	if got, want := backendStub.setOpModeCalls, []backend.OperatingMode{backend.ModeOnline}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("setOpModeCalls=%v want %v", got, want)
+	}
+	if worker.restoreNetworkAfterVoWiFi {
+		t.Fatal("restoreNetworkAfterVoWiFi should be cleared")
+	}
+}
+
 func drainLoggerEntries(ch <-chan logger.LogEntry) []logger.LogEntry {
 	entries := make([]logger.LogEntry, 0)
 	for {

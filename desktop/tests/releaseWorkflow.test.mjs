@@ -15,6 +15,40 @@ test('release workflow builds portable desktop zip with runtime resources', () =
   assert.match(workflow, /vohive-open_linux_amd64/)
 })
 
+test('release workflow copies the vendored iniwex5 backup backend resource without downloading it', () => {
+  assert.match(workflow, /Copy vendored iniwex5\/vohive backup backend resource/)
+  assert.match(workflow, /vendor\\vohive-backends\\iniwex5-vohive-v1\.5\.5-10-gf9eb85d_linux_amd64/)
+  assert.match(workflow, /vohive-orson-v1\.5\.5_linux_amd64/)
+  assert.match(workflow, /841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd/)
+  assert.match(workflow, /Get-FileHash -LiteralPath \$dest -Algorithm SHA256/)
+  assert.match(workflow, /iniwex5\/vohive backup backend SHA256 mismatch/)
+  assert.doesNotMatch(workflow, /Invoke-WebRequest[\s\S]*vohive-orson-v1\.5\.5_linux_amd64/)
+})
+
+test('release workflow downloads the latest VoCat runtime for the desktop package', () => {
+  assert.match(workflow, /Download latest VoCat runtime/)
+  assert.match(workflow, /https:\/\/api\.github\.com\/repos\/MengMengCode\/VoCat\/releases\/latest/)
+  assert.match(workflow, /https:\/\/raw\.githubusercontent\.com\/MengMengCode\/VoCat\/master\/LICENSE/)
+  assert.match(workflow, /vocat-linux-amd64/)
+  assert.match(workflow, /SHA256SUMS/)
+  assert.match(workflow, /resources\\vocat\\LICENSE/)
+  assert.match(workflow, /resources\\vocat\\VOCAT_VERSION/)
+  assert.match(workflow, /VoCat runtime SHA256 mismatch/)
+  assert.match(workflow, /TrimStart\("\*"\)/)
+})
+
+test('release package carries third-party binary notices', () => {
+  const vohiveNotice = readFileSync(
+    new URL('../src-tauri/resources/vohive/THIRD_PARTY_BINARY_NOTICES.md', import.meta.url),
+    'utf8'
+  )
+
+  assert.match(vohiveNotice, /iniwex5\/vohive/)
+  assert.match(vohiveNotice, /Vohive-155\/Orson/)
+  assert.match(vohiveNotice, /841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd/)
+  assert.match(workflow, /resources\\vocat\\LICENSE/)
+})
+
 test('release workflow publishes versioned release notes and Linux runtime assets', () => {
   assert.match(workflow, /branches:\s*\n\s*-\s*main/)
   assert.match(workflow, /\.github\/release-notes\/\$\{\{\s*needs\.vars\.outputs\.tag\s*\}\}\.md/)

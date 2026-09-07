@@ -15,6 +15,12 @@ const (
 )
 
 const (
+	AuthMethodSharedKey uint8 = 2
+)
+
+const (
+	NotifyNoProposalChosen          uint16 = 14
+	NotifyInvalidKEPayload          uint16 = 17
 	NotifyUnacceptableAddresses     uint16 = 40
 	NotifyUnexpectedNATDetected     uint16 = 41
 	NotifyNATDetectionSourceIP      uint16 = 16388
@@ -27,9 +33,14 @@ const (
 	NotifyUpdateSAAddresses         uint16 = 16400
 	NotifyCookie2                   uint16 = 16401
 	NotifyNoNATsAllowed             uint16 = 16402
+	NotifyInitialContact            uint16 = 16384
+	NotifyTicketRequest             uint16 = 16410
+	NotifyEAPOnlyAuthentication     uint16 = 16417
 )
 
 const (
+	DHGroup1024BitMODP uint16 = 2
+	DHGroup1536BitMODP uint16 = 5
 	DHGroup2048BitMODP uint16 = 14
 	DHGroup256BitECP   uint16 = 19
 	DHGroup384BitECP   uint16 = 20
@@ -85,6 +96,13 @@ func NotifyPayload(n Notify) (Payload, error) {
 		return Payload{}, err
 	}
 	return Payload{Type: PayloadNotify, Body: body}, nil
+}
+
+func AuthPayload(method uint8, authData []byte) Payload {
+	body := make([]byte, 4+len(authData))
+	body[0] = method
+	copy(body[4:], authData)
+	return Payload{Type: PayloadAUTH, Body: body}
 }
 
 type Delete struct {
@@ -277,6 +295,21 @@ func NATDetectionNotify(notifyType uint16, spiI, spiR uint64, ip net.IP, port ui
 
 func MOBIKESupportedNotify() Payload {
 	body, _ := (Notify{NotifyType: NotifyMOBIKESupported}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func EAPOnlyAuthenticationNotify() Payload {
+	body, _ := (Notify{ProtocolID: ProtocolIKE, NotifyType: NotifyEAPOnlyAuthentication}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func TicketRequestNotify() Payload {
+	body, _ := (Notify{NotifyType: NotifyTicketRequest}).MarshalBinary()
+	return Payload{Type: PayloadNotify, Body: body}
+}
+
+func InitialContactNotify() Payload {
+	body, _ := (Notify{NotifyType: NotifyInitialContact}).MarshalBinary()
 	return Payload{Type: PayloadNotify, Body: body}
 }
 

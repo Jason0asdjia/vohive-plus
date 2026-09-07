@@ -7,28 +7,30 @@ use crate::models::HealthStatus;
 pub const WEB_URL: &str = "http://127.0.0.1:7575/";
 
 pub fn check_health() -> HealthStatus {
-    match TcpStream::connect_timeout(
-        &"127.0.0.1:7575".parse().expect("valid socket"),
-        Duration::from_millis(800),
-    ) {
-        Ok(mut stream) => {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
-            let req = b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-            if let Err(err) = stream.write_all(req) {
-                return health(false, format!("健康检查写入失败: {err}"));
+    match request_path("/ping") {
+        Ok(buf) if is_vohive_ping_response(&buf) => health(true, "VoHive 后端正常".to_string()),
+        Ok(_) => match request_path("/healthz") {
+            Ok(buf) if is_vocat_liveness_response(&buf) => {
+                health(true, "VoCat 后端正常".to_string())
             }
-            let mut buf = String::new();
-            if let Err(err) = stream.read_to_string(&mut buf) {
-                return health(false, format!("健康检查读取失败: {err}"));
-            }
-            if is_vohive_ping_response(&buf) {
-                health(true, "VoHive 后端正常".to_string())
-            } else {
-                health(false, "端口 7575 有响应，但不像 VoHive /ping".to_string())
-            }
-        }
+            Ok(_) => health(false, "端口 7575 有响应，但不像已知后端".to_string()),
+            Err(err) => health(false, format!("健康检查读取失败: {err}")),
+        },
         Err(err) => health(false, format!("未监听: {err}")),
     }
+}
+
+fn request_path(path: &str) -> std::io::Result<String> {
+    let mut stream = TcpStream::connect_timeout(
+        &"127.0.0.1:7575".parse().expect("valid socket"),
+        Duration::from_millis(800),
+    )?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes())?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 fn is_vohive_ping_response(response: &str) -> bool {
@@ -53,6 +55,25 @@ fn is_vohive_ping_response(response: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_vocat_liveness_response(response: &str) -> bool {
+    let mut parts = response.splitn(2, "\r\n\r\n");
+    let headers = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default().trim();
+    let status_line = headers.lines().next().unwrap_or_default();
+    let status_code = status_line.split_whitespace().nth(1).unwrap_or_default();
+    if status_code != "200" {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(|status| status.as_str().map(|s| s == "ok"))
+        })
+        .unwrap_or(false)
+}
+
 fn health(ok: bool, message: String) -> HealthStatus {
     HealthStatus {
         ok,
@@ -63,7 +84,7 @@ fn health(ok: bool, message: String) -> HealthStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::is_vohive_ping_response;
+    use super::{is_vocat_liveness_response, is_vohive_ping_response};
 
     #[test]
     fn accepts_real_vohive_ping_response() {
@@ -85,5 +106,13 @@ mod tests {
         let response = "HTTP/1.1 503 Service Unavailable\r\n\r\nretry after 200ms";
 
         assert!(!is_vohive_ping_response(response));
+    }
+
+    #[test]
+    fn accepts_vocat_liveness_response() {
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
+
+        assert!(is_vocat_liveness_response(response));
     }
 }

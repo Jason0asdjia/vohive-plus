@@ -19,6 +19,14 @@ export type BackendStatus = {
   message?: string
 }
 
+export type BackendVariant = {
+  id: string
+  name: string
+  version: string
+  description: string
+  resource_name: string
+}
+
 export type HealthStatus = {
   ok: boolean
   url: string
@@ -31,6 +39,8 @@ export type RuntimeStatus = {
   usbipd: ToolStatus
   devices: UsbDevice[]
   backend: BackendStatus
+  backend_variants: BackendVariant[]
+  selected_backend_variant: string
   health: HealthStatus
 }
 

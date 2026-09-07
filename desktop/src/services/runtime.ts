@@ -17,6 +17,9 @@ export const runtimeService = {
   prepareUsb() {
     return invoke<ActionResult>('prepare_usb')
   },
+  setBackendVariant(variantId: string) {
+    return invoke<ActionResult>('set_backend_variant', { req: { variant_id: variantId } })
+  },
   start() {
     return invoke<ActionResult>('start_backend')
   },

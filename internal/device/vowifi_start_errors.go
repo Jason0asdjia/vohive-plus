@@ -59,17 +59,29 @@ func (p *Pool) restoreNetworkAfterVoWiFiStartupFailure(traceID, deviceID string,
 	defer func() {
 		w.restoreNetworkAfterVoWiFi = false
 	}()
+	p.restoreRadioAfterVoWiFiStartupFailure(traceID, deviceID, w)
 	nc := w.NetworkController()
-	if nc == nil || !w.restoreNetworkAfterVoWiFi || w.Backend == nil {
+	if nc == nil || !w.restoreNetworkAfterVoWiFi {
 		return
-	}
-	if restoreErr := w.Backend.SetOperatingMode(p.ctx, backend.ModeOnline); restoreErr != nil {
-		logger.Warn("恢复射频失败", "trace_id", traceID, "device", deviceID, "err", restoreErr)
 	}
 	time.Sleep(500 * time.Millisecond)
 	if connectErr := nc.Connect(); connectErr != nil {
 		logger.Warn("恢复数据连接失败", "trace_id", traceID, "device", deviceID, "err", connectErr)
 	}
+}
+
+func (p *Pool) restoreRadioAfterVoWiFiStartupFailure(traceID, deviceID string, w *Worker) {
+	if w == nil || w.Backend == nil {
+		return
+	}
+	if cur, err := w.Backend.GetOperatingMode(p.ctx); err == nil && !isFlightOperatingMode(cur) {
+		return
+	}
+	if restoreErr := w.Backend.SetOperatingMode(p.ctx, backend.ModeOnline); restoreErr != nil {
+		logger.Warn("恢复射频失败", "trace_id", traceID, "device", deviceID, "err", restoreErr)
+		return
+	}
+	logger.Info("VoWiFi 启动失败后已恢复射频", "trace_id", traceID, "device", deviceID)
 }
 
 func shouldRetryVoWiFiAutoStart(err error) bool {

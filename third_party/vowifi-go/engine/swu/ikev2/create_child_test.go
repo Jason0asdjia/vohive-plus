@@ -135,7 +135,9 @@ func (tr *createChildTransport) ExchangeIKE(ctx context.Context, request []byte)
 			if err != nil {
 				tr.t.Fatalf("ParseSecurityAssociation() error = %v", err)
 			}
-			if len(sa.Proposals) != 1 || !bytes.Equal(sa.Proposals[0].SPI, tr.localSPI) {
+			if !allESPProposalsUseSPI(sa, tr.localSPI) ||
+				!hasESPProposal(sa, ENCR_AES_CBC, 128, INTEG_HMAC_SHA2_256_128) ||
+				!hasESPProposal(sa, ENCR_AES_CBC, 128, INTEG_HMAC_SHA1_96) {
 				tr.t.Fatalf("request SA=%+v", sa)
 			}
 			tr.sawSA = true

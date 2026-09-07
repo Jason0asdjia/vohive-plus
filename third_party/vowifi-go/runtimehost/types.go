@@ -1219,6 +1219,8 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 	return swu.NewTUNIKETunnelManager(
 		swu.IKEPacketTunnelManagerConfig{
 			SIM:                     req.SIM,
+			InitRetryAttempts:       3,
+			InitRetryDelay:          time.Second,
 			Reauthentication:        req.EAPReauthentication,
 			OnReauthenticationState: req.OnEAPReauthenticationState,
 		},
@@ -1226,7 +1228,7 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 			TUN:                 swu.TUNDeviceConfig{Name: strings.TrimSpace(req.Dataplane.TUNName)},
 			DisableRouting:      req.Dataplane.DisableTUNRouting,
 			DefaultRoutes:       true,
-			ProtectEPDGRoutes:   true,
+			ProtectEPDGRoutes:   !proxyEnabledForSWU(req.Proxy),
 			MTU:                 req.Dataplane.TUNMTU,
 			Addresses:           append([]string(nil), req.Dataplane.TUNAddresses...),
 			EPDGRouteExclusions: cloneRuntimeEPDGRouteExclusions(req.Dataplane.TUNEPDGExclusions),
@@ -1234,6 +1236,13 @@ func defaultTunnelManagerForStart(req StartRequest) (swu.TunnelManager, error) {
 			Rules:               append([]swu.TUNRule(nil), req.Dataplane.TUNRules...),
 		},
 	), nil
+}
+
+func proxyEnabledForSWU(proxy *ProxyConfig) bool {
+	if proxy == nil || !proxy.Enabled {
+		return false
+	}
+	return firstRuntimeNonEmpty(proxy.URL, proxy.Address, proxy.Addr) != ""
 }
 
 func cloneRuntimeEPDGRouteExclusions(in []swu.EPDGRouteExclusion) []swu.EPDGRouteExclusion {
@@ -1254,6 +1263,7 @@ func buildTunnelConfig(req StartRequest, modem Modem) swu.TunnelConfig {
 		MCC:       strings.TrimSpace(req.Profile.MCC),
 		MNC:       strings.TrimSpace(req.Profile.MNC),
 		IMEI:      strings.TrimSpace(req.Profile.IMEI),
+		APN:       runtimeVoWiFiAPN(req),
 		Proxy:     toSWUProxyConfig(req.Proxy),
 		StartedAt: time.Now(),
 	}
@@ -1282,6 +1292,10 @@ func buildTunnelConfig(req StartRequest, modem Modem) swu.TunnelConfig {
 		}
 	}
 	return cfg
+}
+
+func runtimeVoWiFiAPN(StartRequest) string {
+	return "ims"
 }
 
 func toSWUProxyConfig(p *ProxyConfig) *swu.ProxyConfig {

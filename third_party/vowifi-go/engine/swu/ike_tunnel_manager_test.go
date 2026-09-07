@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/iniwex5/vowifi-go/engine/sim"
 	"github.com/iniwex5/vowifi-go/engine/swu/eapaka"
@@ -62,6 +63,7 @@ func TestIKEPacketTunnelManagerEstablishesPacketSession(t *testing.T) {
 		IMSI:         "310280233641503",
 		MCC:          "310",
 		MNC:          "280",
+		APN:          "ims",
 		Identity:     IMSIdentity{IMPI: "310280233641503@private.att.net"},
 	})
 	if err != nil {
@@ -98,6 +100,9 @@ func TestIKEPacketTunnelManagerEstablishesPacketSession(t *testing.T) {
 	}
 	if gotAuth.InitiatorID.Type != ikev2.IDRFC822Addr || string(gotAuth.InitiatorID.Data) != gotAuth.EAPIdentity {
 		t.Fatalf("initiator id=%+v", gotAuth.InitiatorID)
+	}
+	if gotAuth.ResponderID.Type != ikev2.IDFQDN || string(gotAuth.ResponderID.Data) != "ims" {
+		t.Fatalf("responder id=%+v, want FQDN ims", gotAuth.ResponderID)
 	}
 	if !bytes.Equal(gotAuth.ChildSPI, []byte{0xca, 0xfe, 0xba, 0xbe}) {
 		t.Fatalf("child SPI=%x", gotAuth.ChildSPI)
@@ -230,6 +235,70 @@ func TestIKEPacketTunnelManagerRetriesEPDGCandidates(t *testing.T) {
 	}
 	if got := session.Result().EPDGAddress; got != "epdg.example" {
 		t.Fatalf("result EPDG=%q, want epdg.example", got)
+	}
+}
+
+func TestIKEPacketTunnelManagerRetriesIKEInitPerCandidate(t *testing.T) {
+	var attempts []string
+	manager := NewIKEPacketTunnelManager(IKEPacketTunnelManagerConfig{
+		SIM:               ikeTunnelAKAProvider{},
+		ChildSPI:          []byte{0x11, 0x22, 0x33, 0x44},
+		InitRetryAttempts: 3,
+		InitRetryDelay:    time.Nanosecond,
+		EPDGCandidateResolver: func(ctx context.Context, host string) ([]string, error) {
+			if host != "epdg.example" {
+				t.Fatalf("resolver host=%q, want epdg.example", host)
+			}
+			return []string{"198.51.100.1", "198.51.100.2"}, nil
+		},
+		IKETransportFactory: func(cfg TunnelConfig, transport IKETransportConfig) (ikev2.InitTransport, error) {
+			return candidateIKETransport{remote: transport.EPDGAddress}, nil
+		},
+		ESPTransportFactory: func(cfg TunnelConfig, transport ESPTransportConfig) (ESPPacketTransport, error) {
+			return &captureESPPacketTransport{}, nil
+		},
+		InitRunner: func(ctx context.Context, cfg ikev2.InitConfig) (ikev2.InitResult, error) {
+			tr, ok := cfg.Transport.(candidateIKETransport)
+			if !ok {
+				t.Fatalf("init transport type=%T, want candidateIKETransport", cfg.Transport)
+			}
+			attempts = append(attempts, tr.remote)
+			if len(attempts) < 4 {
+				return ikev2.InitResult{}, errors.New("ike init timeout")
+			}
+			if tr.remote != "198.51.100.2" {
+				t.Fatalf("successful init remote=%q, want second candidate", tr.remote)
+			}
+			return ikev2.InitResult{Keys: ikev2.IKEKeys{}}, nil
+		},
+		AuthRunner: func(ctx context.Context, cfg ikev2.FullAuthConfig) (ikev2.FullAuthResult, error) {
+			child := packetChildSA(true)
+			child.LocalSPI = append([]byte(nil), cfg.ChildSPI...)
+			return ikev2.FullAuthResult{ChildSA: &child, NextMessageID: 2}, nil
+		},
+	})
+
+	session, err := manager.EstablishTunnel(context.Background(), TunnelConfig{
+		DeviceID:    "dev-1",
+		Mode:        DataplaneModeUserspace,
+		EPDGAddress: "epdg.example",
+		IMSI:        "310280233641503",
+		MCC:         "310",
+		MNC:         "280",
+	})
+	if err != nil {
+		t.Fatalf("EstablishTunnel() error = %v", err)
+	}
+	defer session.Close(context.Background())
+
+	want := []string{"198.51.100.1", "198.51.100.1", "198.51.100.1", "198.51.100.2"}
+	if len(attempts) != len(want) {
+		t.Fatalf("attempts=%v, want %v", attempts, want)
+	}
+	for i := range want {
+		if attempts[i] != want[i] {
+			t.Fatalf("attempts=%v, want %v", attempts, want)
+		}
 	}
 }
 

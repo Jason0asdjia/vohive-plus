@@ -22,6 +22,11 @@
 /desktop/node_modules/
 /desktop/src-tauri/target/
 /desktop/src-tauri/resources/vohive/vohive-open_linux_amd64
+/desktop/src-tauri/resources/vohive/vohive-orson-v1.5.5_linux_amd64
+/desktop/src-tauri/resources/vocat/vocat-linux-amd64
+/desktop/src-tauri/resources/vocat/SHA256SUMS
+/desktop/src-tauri/resources/vocat/VOCAT_VERSION
+/desktop/src-tauri/resources/vocat/LICENSE
 /internal/web/dist/
 /dist/*
 /raspberry-backups/
