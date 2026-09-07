@@ -1,0 +1,78 @@
+name: Sync upstream main
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Synchronize upstream main safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_url="https://github.com/swordstudiox/vohive-plus.git"
+
+          # An unavailable, renamed, archived, or deleted upstream is non-fatal.
+          # This repository is never deleted, reset, or force-pushed.
+          if ! git ls-remote --exit-code "$upstream_url" refs/heads/main >/dev/null 2>&1; then
+            echo "Upstream main is unavailable; retaining this repository unchanged."
+            exit 0
+          fi
+
+          git remote add upstream "$upstream_url"
+          git fetch --no-tags upstream main
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse upstream/main)" ]; then
+            echo "Already current."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Keep this fork's own Actions files. This avoids GitHub token limits
+          # on updating workflow files and preserves local automation.
+          workflow_backup=$(mktemp -d)
+          if [ -d .github/workflows ]; then
+            cp -a .github/workflows/. "$workflow_backup"/
+          fi
+          cleanup() { rm -rf "$workflow_backup"; }
+          trap cleanup EXIT
+
+          if ! git merge --no-edit --no-commit upstream/main; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            if [ "${#conflicts[@]}" -gt 0 ] && printf '%s\n' "${conflicts[@]}" | grep -qv '^\.github/workflows/'; then
+              echo "Upstream merge has non-workflow conflicts; no commit will be pushed."
+              git merge --abort
+              exit 1
+            fi
+            git checkout --ours -- .github/workflows
+            git add -A .github/workflows
+          fi
+
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp -a "$workflow_backup"/. .github/workflows/ 2>/dev/null || true
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No upstream changes to synchronize after preserving local workflows."
+            exit 0
+          fi
+          git commit --no-edit -m "chore：同步上游 main（保留本仓库工作流）"
+          git push origin HEAD:main
