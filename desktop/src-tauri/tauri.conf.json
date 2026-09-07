@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "VoHive Plus",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "identifier": "com.vohive.plus",
   "build": {
-    "beforeDevCommand": "pnpm sync:backend && pnpm dev",
-    "beforeBuildCommand": "pnpm sync:backend && pnpm build",
+    "beforeDevCommand": "pnpm sync:backend && pnpm sync:vocat && pnpm dev",
+    "beforeBuildCommand": "pnpm sync:backend && pnpm sync:vocat && pnpm build",
     "devUrl": "http://127.0.0.1:5176",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "VoHive Plus v1.0.6",
+        "title": "VoHive Plus v1.0.7",
         "width": 980,
         "height": 720,
         "minWidth": 760,
@@ -25,6 +25,6 @@
   },
   "bundle": {
     "active": false,
-    "resources": ["resources/vohive/*"]
+    "resources": ["resources/vohive/*", "resources/vocat/*"]
   }
 }

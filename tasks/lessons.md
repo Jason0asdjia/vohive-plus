@@ -203,3 +203,6 @@
 - 移植 collection/Orson 的 ESP proposal 不能只照抄列表。AES-GCM 属于 AEAD，需要 Child SA key profile、ESP nonce/salt/AAD/tag 和 XFRM/用户态数据面一起支持；在本项目只完整支持 CBC+HMAC 时，默认 proposal 只能声明实际可承载的 CBC-SHA256/CBC-SHA1。
 - IKE_AUTH 报 `EAP success without CHILD_SA` 时，不应把 EAP Success 当作最终成功包直接要求 Child SA；部分 ePDG 会先返回 EAP Success，再要求客户端发送 final `SK { AUTH }`，下一包才携带 `AUTH + SA + CP + TS`。修复前必须对照完整状态机并补红测。
 - 启用 VoWiFi 前置代理时，IKE/ESP 外层出口是 SOCKS5 UDP relay，不是 ePDG 直连；此时不能再把 ePDG 保护路由绑定到模组网卡 `wwan0`。VoWiFi 启动会断蜂窝数据并进入飞行模式，`wwan0` 可能 down，继续 `ip route add ePDG/32 dev wwan0` 会把已经成功的隧道建立误判成路由失败。
+- 桌面端本地构建和 GitHub Action 构建必须走同一类资源语义：第三方运行体缺失时不能静默跳过，否则本地 `tauri build` 会生成看似成功但缺资源的桌面包。同步脚本应明确复制本地源、下载并校验远程源，或带可操作兜底提示失败。
+- 对“可选第三方运行体”要区分本地开发体验和官方发布完整性：本地构建可在 GitHub 不可达时软跳过并汇总提示，官方 Release Action 仍应强制下载/校验/打包，避免正式产物缺资源。
+- Windows 桌面程序不能只假设关闭最后窗口就会退出进程。Tauri v2 桌面壳应在窗口关闭/销毁和无窗口事件循环状态下显式清理并退出，否则无窗口后台进程会锁住 release exe，让后续编译时间看起来“不更新”。

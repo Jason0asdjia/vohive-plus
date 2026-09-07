@@ -4,7 +4,9 @@
 
 VoHive Plus 是面向 Windows + WSL2 的桌面化分支，目标是让大疆 4G 模块在 Windows 电脑上通过轻量桌面壳管理 Linux 后端、USB 直通和 Web 管理页面。
 
-当前主线是 WSL2 路线。桌面软件会把内置的 Linux 后端运行时部署到 WSL2 的 `/opt/vohive`，再由 WSL2 负责识别蜂窝模块、建立 QMI/AT 设备节点并运行 VoHive Web 服务。
+当前主线是 WSL2 路线。桌面软件会把当前选择的 Linux 后端运行体部署到 WSL2，再由 WSL2 负责识别蜂窝模块、建立 QMI/AT 设备节点并运行 Web 管理服务。
+
+桌面壳提供三选一运行体：VoHive Plus、`iniwex5/vohive` 备份运行体、VoCat。VoHive Plus 与 `iniwex5/vohive` 共用 `/opt/vohive`，VoCat 使用 `/opt/vocat`；三者共享本机 `7575` 端口，不作为并行后端同时运行，切换时需要先停止当前后端再重新启动。当前 `iniwex5/vohive` 备份运行体资源取自 Vohive-155/Orson 备份来源；VoCat 由 GitHub Actions 在发布桌面包时拉取 `MengMengCode/VoCat` latest release 的 Linux amd64 二进制并校验 `SHA256SUMS`。
 
 > 本项目里的“固件”指 VoHive Plus Linux 后端运行时二进制，不是大疆模块或通信模组的硬件固件，不会刷写硬件。
 
@@ -43,7 +45,7 @@ VoHive 面向高通 4G/LTE/5G 模组，例如 Quectel EC20、EC25、EC21、EG25�
 
 - Windows 桌面壳：检测 WSL2、检测 usbipd-win、枚举大疆/Baiwang `2ca3:4006` USB 设备。
 - WSL2 USB 编排：连接 USB 到 WSL，准备 `/dev/ttyUSB*`、`/dev/cdc-wdm0`、`wwan0` 或 ECM 网卡。
-- 后端管理：从桌面界面启动/停止 WSL2 内的 VoHive 后端，查看日志并打开 Web UI。
+- 后端管理：从桌面界面三选一启动/停止 WSL2 内的 VoHive Plus、`iniwex5/vohive` 或 VoCat 后端，查看日志并打开 Web UI。
 - Web 管理：添加设备、重新扫描、短信/卡策略等原有 VoHive 能力。
 - 蜂窝策略：支持蜂窝数据开关、VoWiFi 开关、飞行模式、APN/IP 版本和漫游开关。
 - Release 自动化：GitHub Actions 构建 Linux 后端运行时和 Windows x64 桌面便携包。
@@ -75,7 +77,7 @@ winget install dorssel.usbipd-win
 ### 下载与启动
 
 1. 打开 [Releases](https://github.com/swordstudiox/vohive-plus/releases)。
-2. 下载 `vohive-plus-desktop_1.0.6_windows_x64.zip`。
+2. 下载 `vohive-plus-desktop_1.0.7_windows_x64.zip`。
 3. 解压到一个普通目录，例如 `D:\Apps\VoHivePlus`。
 4. 双击 `vohive-plus-desktop.exe`。
 5. 插入大疆 4G 模块。
@@ -93,24 +95,28 @@ Web 默认地址为 `http://127.0.0.1:7575/`，默认登录账号为 `admin/admi
 - `启动 WSL`：启动并保活目标 WSL2 发行版。
 - `连接 USB 到 WSL`：调用 `usbipd-win` 将 `2ca3:4006 Baiwang` 设备 attach 到 WSL2。WSL 未运行时只提示用户先启动，不会自动启动。
 - `准备 WSL USB`：在 WSL2 内绑定所需 Linux 驱动，生成 VoHive 需要的设备节点或网卡。
-- `启动后端`：把桌面包内置的 Linux 后端运行时、默认配置和 USB 准备脚本部署到 `/opt/vohive`，并启动 Web 服务。
-- `停止后端`：停止 WSL2 内的 VoHive 后端进程。
+- `启动后端`：把当前选择的 Linux 后端运行体部署到对应目录并启动 Web 服务；VoHive Plus 与 `iniwex5/vohive` 部署到 `/opt/vohive`，VoCat 部署到 `/opt/vocat`，切换前请先停止后端。
+- `停止后端`：停止 WSL2 内由桌面壳管理的 VoHive Plus、`iniwex5/vohive` 或 VoCat 后端进程。
 - `打开 Web`：打开本机 Web 管理页面。
+
+首次部署 VoCat 时，桌面壳会在 `/opt/vocat/data/vocat.db` 不存在或为空时执行一次 `vocat bootstrap-admin`，生成初始管理员密码，并把 `admin / 密码` 写入桌面诊断日志和 WSL 内 `/opt/vocat/config/desktop-bootstrap-admin.txt`。
 
 ### 常见问题
 
 - 找不到设备：确认 USB 线支持数据传输，并在 Windows 设备列表中能看到 `2ca3:4006 Baiwang`。
 - 连接 USB 到 WSL 失败：先点击 `启动 WSL`，再重试；如提示管理员命令，请用管理员 PowerShell 执行。
 - 准备 WSL USB 失败：拔插设备后按顺序重新执行 `连接 USB 到 WSL` 和 `准备 WSL USB`。
-- Web 打不开：检查后端是否启动，确认端口 `7575` 未被其他程序占用。
+- Web 打不开：检查后端是否启动，确认端口 `7575` 未被其他程序占用；如果桌面壳提示已有未标记后端或外部服务，请先停止后端或释放端口，再重新启动让桌面壳接管当前运行体目录。
+- VoCat 是否一起运行：不一起运行。VoCat 是桌面端可选运行体之一，部署到 `/opt/vocat`；它与 `/opt/vohive` 内的 VoHive Plus 或 `iniwex5/vohive` 备份运行体共享 `7575` 端口，三者只能选择一个运行。
+- VoCat 登录密码在哪里：首次部署成功后看桌面壳“诊断日志”；也可在 WSL 内查看 `/opt/vocat/config/desktop-bootstrap-admin.txt`。已有数据库不会重置密码。
 - 桌面包不是安装包：直接解压运行即可；删除解压目录即可移除桌面程序本体。
 
 ## Release 产物
 
-- `vohive-plus-desktop_1.0.6_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、默认配置和 WSL USB 准备脚本。
-- `vohive-plus-firmware_1.0.6_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
-- `vohive-plus-firmware_1.0.6_linux_arm64`：Linux arm64 后端运行时。
-- `vohive-plus-firmware_1.0.6_linux_armv7`：Linux armv7 后端运行时。
+- `vohive-plus-desktop_1.0.7_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、固定版本的 `iniwex5/vohive` 备份运行体资源、Action 打包时拉取的 VoCat latest Linux amd64 运行体、默认配置和 WSL USB 准备脚本。
+- `vohive-plus-firmware_1.0.7_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
+- `vohive-plus-firmware_1.0.7_linux_arm64`：Linux arm64 后端运行时。
+- `vohive-plus-firmware_1.0.7_linux_armv7`：Linux armv7 后端运行时。
 - `*.sha256`：对应产物的 SHA256 校验文件。
 
 ## 开发者说明
@@ -137,7 +143,7 @@ cp -R web/dist internal/web/dist
 
 GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -buildvcs=false -tags "with_utls nomsgpack" \
-  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.6'" \
+  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.7'" \
   -o dist/vohive-open_linux_amd64 ./cmd/vohive
 ```
 
@@ -157,7 +163,9 @@ pnpm install
 pnpm tauri build
 ```
 
-`pnpm tauri build` 会先执行 `pnpm sync:backend`，把 `dist/vohive-open_linux_amd64` 同步到 Tauri 资源目录。当前项目不生成 NSIS 安装包。正式发布通过 GitHub Actions 把 `vohive-plus-desktop.exe` 和 `resources/vohive/*` 打成便携 zip。
+`pnpm tauri build` 会先执行 `pnpm sync:backend` 和 `pnpm sync:vocat`，把本项目 Linux 后端运行体同步到 Tauri 资源目录，并拉取 VoCat latest Linux amd64 运行体；本地已提供 `VOHIVE_VOCAT_SOURCE` 时则使用该本地文件。当前项目不生成 NSIS 安装包。正式发布通过 GitHub Actions 把 `vohive-plus-desktop.exe`、`resources/vohive/*` 和 `resources/vocat/*` 打成便携 zip。包内会带上 `resources/vohive/THIRD_PARTY_BINARY_NOTICES.md` 和 `resources/vocat/LICENSE`，用于说明第三方二进制来源与许可约束。
+
+桌面 Release 包会打包 Action 执行时解析到的 VoCat latest release。Action 调用 GitHub Releases API 获取 `MengMengCode/VoCat` 的同一份 latest 元数据，从该 release 下载 `vocat-linux-amd64` 和 `SHA256SUMS`，校验通过后写入 `resources/vocat/VOCAT_VERSION`。这意味着同一个 VoHive Plus 版本如果重新跑 Action，可能打入更新的 VoCat 版本；`iniwex5/vohive` 备份运行体仍固定存放在 `desktop/vendor/vohive-backends/` 并使用固定 SHA256 校验。
 
 ### 测试命令
 
@@ -187,7 +195,7 @@ cargo test
 git push origin main
 ```
 
-GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.6.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
+GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.7.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
 
 后续版本遵循语义化版本规则：
 

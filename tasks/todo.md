@@ -3,6 +3,7 @@
 ## 当前决策
 
 - 源码基线：采用 `windloom/vohive-open`，不再以 `openvohive/openvohive` 作为主线。
+- 运行体选择：VoCat、本项目 VoHive Plus、`iniwex5/vohive` 备份运行体是三选一关系，不做同时运行；VoHive Plus 与 `iniwex5/vohive` 共用 `/opt/vohive`，VoCat 使用 `/opt/vocat`。当前 `iniwex5/vohive` 备份运行体资源取自 Vohive-155/Orson 镜像来源；VoCat 由桌面 Release Action 拉取 `MengMengCode/VoCat` latest release。
 - 运行路线：同时推进两条正式路线。
   - 路线 A：WSL2 运行路线。不是临时验证，而是可交付运行方式之一，优先利用当前机器已有 WSL2 快速跑通。
   - 路线 B：VirtualBox Headless + 最小 Debian。作为更可控、可封装的 VM 运行路线。
@@ -21,6 +22,46 @@
   - 轻量优先：Tauri + WebView2。
   - 开发速度优先：Electron。
   - 原生优先：C# WPF/WinUI。
+
+## 阶段 4J：`/opt/vohive` 唯一活动槽位语义
+
+### 目标
+
+- [x] 明确 VoCat 不进入 `/opt/vohive`，使用独立 `/opt/vocat`。
+- [x] 本项目 VoHive Plus 与 `iniwex5/vohive` 备份运行体共用 `/opt/vohive` 作为唯一活动槽位，用户选择哪个运行体，哪个占用该槽位。
+- [x] 桌面壳启动后端时，如果 7575 已有运行中的未标记 `/opt/vohive` 后端，不静默复用；提示先停止再启动，让桌面壳重新部署并写入运行体标记。
+
+### 实施计划
+
+- [x] RED：补充桌面壳单元测试，验证未标记运行中后端即使选择默认 VoHive Plus 也会被视为需要停止/接管。
+- [x] GREEN：调整 `start_backend` 的运行体检查，运行中的未标记后端一律提示停止后再启动。
+- [x] 文档：在 README 中补充 `/opt/vohive` 是 VoHive Plus 与 `iniwex5/vohive` 的共用槽位，VoCat 使用 `/opt/vocat`，三者不做并存运行；桌面 Release 下载并打包 VoCat latest，固定版本的 `iniwex5/vohive` 备份运行体资源取自 Vohive-155/Orson 镜像。
+- [x] 验证：运行 `cargo test commands::`，13 项桌面命令相关测试通过。
+
+## 阶段 4K：桌面端纳入 VoCat 运行体并在 Release 拉取 latest
+
+### 目标
+
+- [x] 桌面端运行体下拉新增 VoCat，形成 VoHive Plus、`iniwex5/vohive`、VoCat 三选一。
+- [x] VoHive Plus 与 `iniwex5/vohive` 仍部署到 `/opt/vohive`；VoCat 部署到 `/opt/vocat`。
+- [x] GitHub Action 发布桌面包时拉取 `MengMengCode/VoCat` latest release 的 Linux amd64 二进制并校验 `SHA256SUMS`。
+- [x] 桌面包内包含 `resources/vocat/vocat-linux-amd64` 和 `resources/vocat/VOCAT_VERSION`，用于部署和显示实际打包版本。
+- [x] 启动任一运行体前仍按 7575 单端口三选一处理，不允许静默复用不同运行体。
+
+### 实施计划
+
+- [x] RED：补充 release workflow 测试，要求 Action 解析 VoCat latest release、下载 `vocat-linux-amd64` 与 `SHA256SUMS`、校验后打进 `resources/vocat/`。
+- [x] RED：补充 Tauri bundle 测试，要求 `resources/vocat/*` 进入桌面资源。
+- [x] RED：补充运行体测试，要求 variants 包含 VoCat，部署脚本写入 `/opt/vocat`，启动命令使用 `/opt/vocat/bin/vocat serve`。
+- [x] GREEN：更新 `.github/workflows/binary-release.yml`、`desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/src/backend_variants.rs`、`desktop/src-tauri/src/commands.rs`、桌面 UI 文案和 README。
+- [x] VERIFY：运行桌面 Node 测试、Rust `commands::`/`backend_variants::` 测试，并检查文档中 VoCat 打包语义一致。
+
+### 评审记录
+
+- [x] 2026-09-07 RED：`node --test desktop\tests\releaseWorkflow.test.mjs desktop\tests\noInstallerBundle.test.mjs desktop\tests\wslStartUi.test.mjs` 先失败于缺少 VoCat latest 下载步骤和 `resources/vocat/*` 打包配置；`cargo test commands::tests::backend_variants_include_default_iniwex_backup_and_vocat_runtime` 先失败于缺少 `VARIANT_VOCAT` 和 VoCat 启动参数。
+- [x] 2026-09-07 GREEN：新增 VoCat 运行体，部署到 `/opt/vocat`，启动命令为 `VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db /opt/vocat/bin/vocat serve`；停止/状态探测同时覆盖 `/opt/vohive` 与 `/opt/vocat`。
+- [x] 2026-09-07 GREEN：Release workflow 使用 GitHub Releases API 解析 `MengMengCode/VoCat` latest release，从同一份 release 元数据下载 `vocat-linux-amd64` 和 `SHA256SUMS`，校验后写入 `resources/vocat/VOCAT_VERSION` 并打进便携包。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 25 项通过；`cargo test` 39 项通过；`pnpm --dir desktop build` 通过；同时暴露出本地 `pnpm --dir desktop sync:vocat` 在未提供本地 VoCat 二进制时只跳过不联网，后续已在阶段 6X 修复为 latest 下载或明确失败。
 
 ## 阶段 1：源码基线落地
 
@@ -1082,27 +1123,28 @@
 - [x] 2026-09-04 Orson VoWiFi 实机结果：`PATCH /api/devices/wwan0/vowifi` 返回成功，运行态 `phase=sms_ready`、`tunnel_ready=true`、`ims_ready=true`、`sms_ready=true`。
 - [x] 2026-09-04 Orson 成功日志关键差异：ePDG 对首轮 IKE 返回 `preferred_group=2`，Orson 重新发起 SA_INIT，并回落到 `sha1_legacy` / `MODP_1024`；随后 EAP-AKA、Child SA、IMS REGISTER 成功。该证据强烈指向本项目当前 IKE/SWU 报文兼容性问题，而不是 SIM、节点或运营商不可用。
 
-## 阶段 6S：桌面壳支持备用 Orson 后端部署
+## 阶段 6S：桌面壳支持 `iniwex5/vohive` 备份运行体部署
 
 ### 设计
 
-- [ ] 桌面壳默认仍部署本项目后端 `vohive-open_linux_amd64`，新增 `Orson/Vohive-155 v1.5.5` 备用后端选项。
-- [ ] 备用后端只作为诊断和回退运行体，不能替代本项目的 `vohive-usb-prepare.sh`；WSL USB 准备仍使用本项目脚本。
+- [x] 桌面壳默认仍部署本项目后端 `vohive-open_linux_amd64`，新增 `iniwex5/vohive v1.5.5` 备份运行体选项；当前二进制资源取自 Vohive-155/Orson 镜像来源。
+- [x] 备份运行体只作为诊断和回退运行体，不能替代本项目的 `vohive-usb-prepare.sh`；WSL USB 准备仍使用本项目脚本。
 - [x] 选择项保存到桌面壳本地配置文件；用户下次打开仍保留上次选择，无效旧配置自动回退本项目默认后端。
-- [ ] UI 必须显示当前选择和差异提示：备用后端可用于 WiFi Calling 对照，但不包含本项目新增的 WSL USB prepare 参数和 SOCKS5 UDP 前置代理能力。
+- [x] UI 必须显示当前选择和差异提示：备份运行体可用于 WiFi Calling 对照，但不包含本项目新增的 WSL USB prepare 参数和 SOCKS5 UDP 前置代理能力；后续阶段 4K 已将 VoCat 纳入桌面壳管理，部署到 `/opt/vocat` 并与 `/opt/vohive` 运行体三选一。
 
 ### 实施计划
 
-- [x] RED：新增桌面资源同步测试，要求脚本能同步主后端和 Orson 备用后端。
-- [x] GREEN：扩展 `desktop/scripts/sync-backend-resource.mjs`，同步 `vohive-open_linux_amd64` 和 `vohive-orson-v1.5.5_linux_amd64`。
+- [x] RED：新增桌面资源同步测试，要求脚本能同步主后端和 `iniwex5/vohive` 备份运行体。
+- [x] GREEN：扩展 `desktop/scripts/sync-backend-resource.mjs`，同步 `vohive-open_linux_amd64` 和 `vohive-orson-v1.5.5_linux_amd64`；后者保持历史资源文件名，但用户可见名称为 `iniwex5/vohive`。
 - [x] RED：新增 Rust 单测，要求资源校验能按 variant 选择对应二进制，且提示缺失的备用资源名。
 - [x] GREEN：新增 `BackendVariant` 模型和选择命令，`install_or_import` 根据选中的 variant 部署对应二进制。
 - [x] RED：新增桌面 UI/service 测试，要求界面暴露备用后端选择能力。
 - [x] GREEN：更新 `desktop/src/App.vue`、`desktop/src/services/runtime.ts`、`desktop/src/types/runtime.ts`，支持选择备用后端并在后端面板展示说明。
 - [x] GREEN：新增桌面本地配置读写，`set_backend_variant` 保存选择，桌面启动时读取并校验已保存的运行体。
-- [x] GREEN：部署时额外复制本项目后端到 `/opt/vohive/bin/vohive-plus`，并让 `vohive-usb-prepare.sh` 固定调用它，避免 Orson 备用后端缺少 `--prepare-usb` 破坏 USB 准备。
-- [x] GREEN：Release workflow 显式下载 `Orson-Yan/Vohive-155` 的 Linux amd64 备用后端资源并打入桌面便携包。
-- [x] GREEN：Release workflow 对 Orson 备用后端执行 SHA256 强校验，期望值为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] GREEN：部署时额外复制本项目后端到 `/opt/vohive/bin/vohive-plus`，并让 `vohive-usb-prepare.sh` 固定调用它，避免 `iniwex5/vohive` 备份运行体缺少 `--prepare-usb` 破坏 USB 准备。
+- [x] GREEN：Release workflow 从 `desktop/vendor/vohive-backends/` 复制固定版本的 Linux amd64 备份运行体资源并打入桌面便携包；后续阶段 4K 已新增 VoCat latest 下载和打包。
+- [x] GREEN：Release workflow 对 `iniwex5/vohive` 备份运行体执行 SHA256 强校验，期望值为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`。
+- [x] GREEN：将固定版本的 `iniwex5/vohive` 备份运行体二进制放入 `desktop/vendor/vohive-backends/`；Release workflow 从 vendor 复制到 Tauri 资源目录并校验 SHA256，不再每次访问外部 raw URL 下载。
 - [x] GREEN：WSL 部署时写入 `/opt/vohive/config/desktop-backend-variant`；后端健康但已部署运行体与当前选择不一致时，启动按钮提示先停止再启动，不再复用旧进程。
 - [x] GREEN：主后端下拉版本从 Rust crate 版本读取，避免后续发版时继续显示旧版本号。
 - [x] VERIFY：运行桌面 Node 测试和 Rust 测试。
@@ -1115,7 +1157,10 @@
 - [x] 2026-09-04 VERIFY：`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 29 项通过。
 - [x] 2026-09-04 VERIFY：`pnpm --dir desktop build` 通过。
 - [x] 2026-09-04 资源同步：`desktop/src-tauri/resources/vohive/vohive-open_linux_amd64` 与 `desktop/src-tauri/resources/vohive/vohive-orson-v1.5.5_linux_amd64` 均已由同步脚本生成；两个大二进制继续由 `.gitignore` 排除，发布包由 CI/构建脚本生成。
-- [x] 2026-09-04 代码审查跟进：修复运行体选择持久化、Release 下载 SHA256 校验、主后端版本硬编码、健康检查误复用旧运行体；本地开发构建仍允许 Orson 资源下载失败后跳过，官方 release workflow 负责强制打包和校验备用资源。
+- [x] 2026-09-04 代码审查跟进：修复运行体选择持久化、Release 备份运行体 SHA256 校验、主后端版本硬编码、健康检查误复用旧运行体；官方 release workflow 负责强制打包和校验备用资源。
+- [x] 2026-09-07 命名和发布边界调整：用户可见名称统一为 `iniwex5/vohive` 备份运行体，Vohive-155/Orson 仅作为镜像来源说明；后续阶段 4K 已确认桌面端可选 VoCat，并由 Release Action 拉取 VoCat latest 打包。
+- [x] 2026-09-07 vendor 固定化：`desktop/vendor/vohive-backends/iniwex5-vohive-v1.5.5-10-gf9eb85d_linux_amd64` 已入库作为 Action 输入，SHA256 为 `841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd`；Action 发布时复制并校验，不再从外部 raw URL 下载该备份运行体。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\wslStartUi.test.mjs desktop\tests\releaseWorkflow.test.mjs desktop\tests\syncBackendResource.test.mjs` 20 项通过；`cargo test commands::` 13 项通过；`cargo test backend_variants::` 3 项通过；vendor 备份运行体 SHA256 与固定校验值一致。
 
 ## 阶段 6T：对比 hzlmy2002/vohive-collection 的可合并能力
 
@@ -1252,3 +1297,23 @@
 - [x] VERIFY：`pnpm --dir desktop build` 通过。
 - [x] VERIFY：`node -e` 校验 `desktop/package.json` 与 `desktop/src-tauri/tauri.conf.json` JSON 格式通过。
 - [x] VERIFY：`./.toolchains/go/bin/go test ./third_party/vowifi-go/engine/swu/ikev2 ./third_party/vowifi-go/engine/swu ./third_party/vowifi-go/runtimehost ./internal/device -count=1` 通过，其中 `internal/device` 用时约 57 秒。
+
+## 阶段 6X：准备 VoHive Plus 1.0.7 本地提交
+
+### 实施计划
+
+- [x] 将桌面端、Tauri/Rust crate、Release workflow 默认版本和 README 当前发布引用从 `1.0.6` 升级到 `1.0.7`。
+- [x] 新增 `.github/release-notes/v1.0.7.md`，承载本轮 VoCat 与 `iniwex5/vohive` 打包策略说明。
+- [x] VERIFY：复跑桌面 Node 测试、Rust 测试和桌面构建。
+- [x] REVIEW：对当前未提交变更进行代码审查，记录阻塞问题和建议。
+
+### 评审记录
+
+- [x] 2026-09-07 VERSION：已将桌面端版本、Tauri/Rust crate 版本、Release workflow 默认值、README 当前产物引用升级到 `1.0.7`，并新增 `.github/release-notes/v1.0.7.md`。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 26 项通过；`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 41 项通过；`pnpm --dir desktop build` 通过；`node -e` 校验桌面 JSON 配置解析通过。
+- [x] 2026-09-07 REVIEW：发现 2 个发布前应处理的问题：VoCat 首次部署缺少管理员 bootstrap 流程；桌面包重新分发 VoCat 和 vendored `iniwex5/vohive` 二进制时缺少随包 LICENSE/NOTICE 记录。
+- [x] 2026-09-07 FIX：VoCat 首次部署会在空数据库时执行 `bootstrap-admin` 并记录初始密码；Release workflow 会下载 VoCat LICENSE，`resources/vohive/THIRD_PARTY_BINARY_NOTICES.md` 记录第三方二进制来源；健康检查已补充 VoCat `/healthz` 响应识别。
+- [x] 2026-09-07 FIX：本地 `sync:vocat` 原先在没有 `VOHIVE_VOCAT_SOURCE` 且资源目录缺少 `vocat-linux-amd64` 时会跳过下载，导致本地 `pnpm --dir desktop tauri build` 无法把 VoCat 放入资源目录；现已改为优先复用本地资源，其次拉取 `MengMengCode/VoCat` latest release 并校验 `SHA256SUMS`，如果 GitHub 不可达则软跳过，让本地构建继续并在日志中提示 VoCat 未打包。
+- [x] 2026-09-07 FIX：桌面窗口关闭后进程可能残留为无窗口后台进程，导致后续 release 编译无法替换 `target/release/vohive-plus-desktop.exe`；已在 Tauri run event 层处理窗口关闭/销毁和无窗口状态，退出前释放桌面壳持有的 WSL 后端与保活子进程。
+- [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 27 项通过；`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 43 项通过；`pnpm --dir desktop build` 通过；`node --test desktop\tests\syncVocatResource.test.mjs` 覆盖本地复制、latest 下载和 GitHub 不可达软跳过三条路径。
+- [x] 2026-09-07 VERIFY：用户手动放入 `desktop/src-tauri/resources/vocat/vocat-linux-amd64` 后，真实执行 `pnpm --dir desktop sync:vocat` 复用本地资源；`pnpm --dir desktop tauri build` 成功，生成 `desktop/src-tauri/target/release/vohive-plus-desktop.exe`，修改时间 `2026/9/7 15:07:34`，大小 `8,828,928` 字节；`target/release/resources/vocat/` 已包含 `vocat-linux-amd64`，且编译后没有 `vohive-plus-desktop` 残留进程。

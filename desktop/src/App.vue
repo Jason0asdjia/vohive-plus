@@ -117,7 +117,7 @@ onMounted(async () => {
           </select>
         </label>
         <div v-if="selectedBackendVariant" class="hint">{{ selectedBackendVariant.description }}</div>
-        <div class="hint">Orson/Vohive-155 仅作为 WiFi Calling 对照和应急备用后端。</div>
+        <div class="hint">三者共享 7575 端口，切换前请先停止后端。VoCat 首次部署密码见诊断日志。</div>
         <div class="row"><span>进程</span><b>{{ status.backend.running ? '运行中' : '未运行' }}</b></div>
         <div v-if="status.backend.message" class="hint">{{ status.backend.message }}</div>
         <div class="row"><span>健康检查</span><b>{{ healthText }}</b></div>

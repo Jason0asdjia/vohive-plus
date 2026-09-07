@@ -11,7 +11,7 @@ on:
       version:
         description: 'Release version, with or without a leading v'
         required: false
-        default: '1.0.6'
+        default: '1.0.7'
       enable_upx:
         description: 'Enable UPX compression for Linux runtime binaries (true/false)'
         required: false
@@ -49,7 +49,7 @@ jobs:
             RAW_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' desktop/package.json | head -n 1)"
           fi
           if [[ -z "${RAW_VERSION}" ]]; then
-            RAW_VERSION="1.0.6"
+            RAW_VERSION="1.0.7"
           fi
           VERSION="${RAW_VERSION#v}"
           TAG="v${VERSION}"
@@ -268,21 +268,61 @@ jobs:
           }
           Copy-Item -LiteralPath $source -Destination "src-tauri\resources\vohive\vohive-open_linux_amd64" -Force
 
-      - name: Download Orson fallback backend resource
+      - name: Copy vendored iniwex5/vohive backup backend resource
         working-directory: desktop
         shell: pwsh
         run: |
-          $url = "https://raw.githubusercontent.com/Orson-Yan/Vohive-155/main/release/vohive_v1.5.5-10-gf9eb85d_linux_amd64"
+          $source = "vendor\vohive-backends\iniwex5-vohive-v1.5.5-10-gf9eb85d_linux_amd64"
           $dest = "src-tauri\resources\vohive\vohive-orson-v1.5.5_linux_amd64"
           $expectedHash = "841d117d4921718b2627a6485b09c62d858c088e42e6e55468ae0f3e0ece1bdd"
-          Invoke-WebRequest -Uri $url -OutFile $dest
+          if (!(Test-Path -LiteralPath $source)) {
+            throw "Missing vendored iniwex5/vohive backup backend resource: $source"
+          }
+          Copy-Item -LiteralPath $source -Destination $dest -Force
           if (!(Test-Path -LiteralPath $dest)) {
-            throw "Missing Orson fallback backend resource: $dest"
+            throw "Missing iniwex5/vohive backup backend resource: $dest"
           }
           $actualHash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $expectedHash) {
-            throw "Orson fallback backend SHA256 mismatch: expected $expectedHash, got $actualHash"
+            throw "iniwex5/vohive backup backend SHA256 mismatch: expected $expectedHash, got $actualHash"
           }
+
+      - name: Download latest VoCat runtime
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/MengMengCode/VoCat/releases/latest" -Headers @{ "User-Agent" = "vohive-plus-release" }
+          $runtimeAsset = $release.assets | Where-Object { $_.name -eq "vocat-linux-amd64" } | Select-Object -First 1
+          $checksumsAsset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
+          if ($null -eq $runtimeAsset) {
+            throw "VoCat latest release $($release.tag_name) is missing vocat-linux-amd64"
+          }
+          if ($null -eq $checksumsAsset) {
+            throw "VoCat latest release $($release.tag_name) is missing SHA256SUMS"
+          }
+          New-Item -ItemType Directory -Force -Path "src-tauri\resources\vocat" | Out-Null
+          $runtimeDest = "src-tauri\resources\vocat\vocat-linux-amd64"
+          $checksumsDest = "src-tauri\resources\vocat\SHA256SUMS"
+          $licenseDest = "src-tauri\resources\vocat\LICENSE"
+          Invoke-WebRequest -Uri $runtimeAsset.browser_download_url -OutFile $runtimeDest
+          Invoke-WebRequest -Uri $checksumsAsset.browser_download_url -OutFile $checksumsDest
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MengMengCode/VoCat/master/LICENSE" -OutFile $licenseDest
+          $expectedHash = $null
+          foreach ($line in Get-Content -LiteralPath $checksumsDest) {
+            $parts = $line.Trim() -split "\s+"
+            if ($parts.Count -ge 2 -and $parts[1].TrimStart("*") -eq "vocat-linux-amd64") {
+              $expectedHash = $parts[0]
+              break
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+            throw "SHA256SUMS in VoCat latest release $($release.tag_name) does not contain vocat-linux-amd64"
+          }
+          $actualHash = (Get-FileHash -LiteralPath $runtimeDest -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+            throw "VoCat runtime SHA256 mismatch: expected $expectedHash, got $actualHash"
+          }
+          $release.tag_name | Set-Content -LiteralPath "src-tauri\resources\vocat\VOCAT_VERSION" -Encoding ascii -NoNewline
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -302,16 +342,23 @@ jobs:
           $package = "vohive-plus-desktop_${version}_windows_x64"
           $root = Join-Path $PWD "out\$package"
           $exe = "src-tauri\target\release\vohive-plus-desktop.exe"
-          $resourceSource = "src-tauri\target\release\resources\vohive"
+          $resourceRoot = "src-tauri\target\release\resources"
           if (!(Test-Path -LiteralPath $exe)) {
             throw "Missing desktop executable: $exe"
           }
-          if (!(Test-Path -LiteralPath $resourceSource)) {
-            $resourceSource = "src-tauri\resources\vohive"
+          if (!(Test-Path -LiteralPath $resourceRoot)) {
+            $resourceRoot = "src-tauri\resources"
           }
-          New-Item -ItemType Directory -Force -Path "$root\resources\vohive" | Out-Null
+          if (!(Test-Path -LiteralPath "$resourceRoot\vohive")) {
+            throw "Missing VoHive resources: $resourceRoot\vohive"
+          }
+          if (!(Test-Path -LiteralPath "$resourceRoot\vocat")) {
+            throw "Missing VoCat resources: $resourceRoot\vocat"
+          }
+          New-Item -ItemType Directory -Force -Path "$root\resources" | Out-Null
           Copy-Item -LiteralPath $exe -Destination $root -Force
-          Copy-Item -Path "$resourceSource\*" -Destination "$root\resources\vohive" -Recurse -Force
+          Copy-Item -Path "$resourceRoot\vohive" -Destination "$root\resources" -Recurse -Force
+          Copy-Item -Path "$resourceRoot\vocat" -Destination "$root\resources" -Recurse -Force
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Compress-Archive -LiteralPath (Get-ChildItem -LiteralPath $root).FullName -DestinationPath "out\$package.zip" -Force
           $zip = "out\$package.zip"

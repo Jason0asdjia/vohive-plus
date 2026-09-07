@@ -13,7 +13,7 @@ function runSync(env) {
     env.VOHIVE_TAURI_TARGET_DIR ||
     join(dirnameFromDestination(env.VOHIVE_BACKEND_DEST), 'src-tauri', 'target')
   return spawnSync(process.execPath, [script], {
-    env: { ...process.env, VOHIVE_ORSON_BACKEND_URL: '', VOHIVE_TAURI_TARGET_DIR: targetDir, ...env },
+    env: { ...process.env, VOHIVE_TAURI_TARGET_DIR: targetDir, ...env },
     encoding: 'utf8',
   })
 }
@@ -51,7 +51,7 @@ test('sync backend resource copies built Linux runtime into desktop resources', 
   }
 })
 
-test('sync backend resource copies Orson fallback runtime when provided', () => {
+test('sync backend resource copies iniwex5 backup runtime from an explicit source when provided', () => {
   const dir = mkdtempSync(join(tmpdir(), 'vohive-sync-orson-resource-'))
   try {
     const mainSource = join(dir, 'dist', 'vohive-open_linux_amd64')
@@ -72,10 +72,18 @@ test('sync backend resource copies Orson fallback runtime when provided', () => 
 
     assert.equal(result.status, 0, result.stderr)
     assert.equal(readFileSync(destination, 'utf8'), 'orson-runtime')
-    assert.match(result.stdout, /Synced Orson fallback backend resource/)
+    assert.match(result.stdout, /Synced iniwex5\/vohive backup backend resource/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('sync backend resource defaults to the vendored iniwex5 backup runtime', () => {
+  const source = readFileSync(script, 'utf8')
+
+  assert.match(source, /'vendor'[\s\S]*'vohive-backends'/)
+  assert.match(source, /iniwex5-vohive-v1\.5\.5-10-gf9eb85d_linux_amd64/)
+  assert.doesNotMatch(source, /defaultOrsonDownloadUrl/)
 })
 
 test('sync backend resource refreshes built desktop target resources', () => {

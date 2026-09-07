@@ -7,8 +7,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
 use crate::backend_variants::{
-    by_id as backend_variant_by_id, default_variant_id, variants as backend_variants,
-    RESOURCE_VOHIVE_PLUS,
+    by_id as backend_variant_by_id,
+    variants_with_vocat_version as backend_variants_with_vocat_version, RESOURCE_VOCAT,
+    RESOURCE_VOHIVE_PLUS, VARIANT_VOCAT,
 };
 use crate::desktop_config;
 use crate::health::{check_health, WEB_URL};
@@ -255,42 +256,10 @@ pub fn set_backend_variant(
 pub fn start_backend(app: AppHandle, state: State<'_, AppState>) -> ActionResult {
     if check_health().ok {
         let selected = selected_backend_variant_from_app_state(&state);
-        match deployed_backend_variant_id() {
-            Ok(Some(deployed)) if deployed != selected => {
-                let selected_name = backend_variant_by_id(&selected)
-                    .map(|variant| format!("{} {}", variant.name, variant.version))
-                    .unwrap_or(selected);
-                let deployed_name = backend_variant_by_id(&deployed)
-                    .map(|variant| format!("{} {}", variant.name, variant.version))
-                    .unwrap_or(deployed);
-                return action(
-                    false,
-                    format!(
-                        "后端正在运行的是 {deployed_name}，当前选择是 {selected_name}；请先停止后端，再重新启动以切换运行体。"
-                    ),
-                    Some(build_status(&state)),
-                    None,
-                );
-            }
-            Ok(None) if selected != default_variant_id() => {
-                return action(
-                    false,
-                    "后端正在运行，但无法确认它是当前选择的备用运行体；请先停止后端，再重新启动以切换运行体。"
-                        .to_string(),
-                    Some(build_status(&state)),
-                    None,
-                );
-            }
-            Ok(_) => {}
-            Err(err) if selected != default_variant_id() => {
-                return action(
-                    false,
-                    format!("后端正在运行，但读取已部署运行体失败: {err}；请先停止后端，再重新启动以切换运行体。"),
-                    Some(build_status(&state)),
-                    None,
-                );
-            }
-            Err(_) => {}
+        if let Some(message) =
+            backend_running_variant_guard(&selected, deployed_backend_variant_id())
+        {
+            return action(false, message, Some(build_status(&state)), None);
         }
         state.logs.push("后端健康检查正常，复用已有 WSL 进程");
         return action(true, "后端已在运行", Some(build_status(&state)), None);
@@ -304,19 +273,9 @@ pub fn start_backend(app: AppHandle, state: State<'_, AppState>) -> ActionResult
         return action(true, "后端已在运行", Some(build_status(&state)), None);
     }
 
+    let selected = selected_backend_variant_from_app_state(&state);
     let mut cmd = hidden_command(r"C:\Windows\System32\wsl.exe");
-    cmd.args([
-        "-d",
-        wsl::DISTRO,
-        "-u",
-        "root",
-        "--cd",
-        "/opt/vohive",
-        "--exec",
-        "/opt/vohive/bin/vohive",
-        "-c",
-        "/opt/vohive/config/config.yaml",
-    ]);
+    cmd.args(backend_start_args(&selected));
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     match cmd.spawn() {
         Ok(mut child) => {
@@ -414,7 +373,7 @@ fn build_status(state: &State<'_, AppState>) -> RuntimeStatus {
         usbipd,
         devices,
         backend,
-        backend_variants: backend_variants(),
+        backend_variants: backend_variants_with_vocat_version(packaged_vocat_version()),
         selected_backend_variant: selected_backend_variant(state),
         health,
     }
@@ -451,7 +410,7 @@ fn backend_status(state: &State<'_, AppState>, health_ok: bool) -> BackendStatus
             }
         }
     } else {
-        external_backend_status(health_ok, wsl::vohive_backend_pids(Duration::from_secs(3)))
+        external_backend_status(health_ok, wsl::managed_backend_pids(Duration::from_secs(3)))
             .unwrap_or(BackendStatus {
                 running: false,
                 pid: None,
@@ -487,6 +446,33 @@ fn external_backend_status(
     }
 }
 
+fn backend_running_variant_guard(
+    selected: &str,
+    deployed: Result<Option<String>, String>,
+) -> Option<String> {
+    match deployed {
+        Ok(Some(deployed)) if deployed != selected => {
+            let selected_name = backend_variant_by_id(selected)
+                .map(|variant| format!("{} {}", variant.name, variant.version))
+                .unwrap_or_else(|| selected.to_string());
+            let deployed_name = backend_variant_by_id(&deployed)
+                .map(|variant| format!("{} {}", variant.name, variant.version))
+                .unwrap_or(deployed);
+            Some(format!(
+                "后端正在运行的是 {deployed_name}，当前选择是 {selected_name}；请先停止后端，再重新启动以切换运行体。"
+            ))
+        }
+        Ok(None) => Some(
+            "检测到 7575 已有运行中的未标记后端或外部服务；请先停止后端，再重新启动，让桌面壳接管当前运行体目录。"
+                .to_string(),
+        ),
+        Err(err) => Some(format!(
+            "后端正在运行，但读取已部署运行体失败: {err}；请先停止后端，再重新启动以接管当前运行体目录。"
+        )),
+        Ok(Some(_)) => None,
+    }
+}
+
 fn install_or_import(app: &AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
     let resource_dir = app
         .path()
@@ -495,7 +481,7 @@ fn install_or_import(app: &AppHandle, state: &State<'_, AppState>) -> Result<(),
     let selected = selected_backend_variant_from_app_state(state);
     let variant =
         backend_variant_by_id(&selected).ok_or_else(|| format!("未知后端运行体: {selected}"))?;
-    let bin = resource_dir.join(format!("resources/vohive/{}", variant.resource_name));
+    let bin = resource_dir.join(variant_resource_path(&variant));
     let plus_bin = resource_dir.join(format!("resources/vohive/{}", RESOURCE_VOHIVE_PLUS));
     let cfg = resource_dir.join("resources/vohive/config.example.yaml");
     let script = resource_dir.join("resources/vohive/vohive-usb-prepare.sh");
@@ -507,10 +493,9 @@ fn install_or_import(app: &AppHandle, state: &State<'_, AppState>) -> Result<(),
     let deploy = backend_deploy_script(&variant.id, &bin_wsl, &plus_bin_wsl, &cfg_wsl, &script_wsl);
     match wsl::run_root_shell(&deploy) {
         Ok(out) if out.status.success() => {
-            state.logs.push(format!(
-                "已部署 {} {} 到 WSL /opt/vohive",
-                variant.name, variant.version
-            ));
+            for log in backend_deploy_success_logs(&variant, &clean_output(&out.stdout)) {
+                state.logs.push(log);
+            }
             Ok(())
         }
         Ok(out) => Err(format!("部署 WSL 资源失败: {}", clean_output(&out.stderr))),
@@ -525,7 +510,24 @@ fn backend_deploy_script(
     cfg_wsl: &str,
     script_wsl: &str,
 ) -> String {
+    let is_vocat = variant_id == VARIANT_VOCAT;
     let variant_id = wsl::sh_quote(variant_id);
+    if is_vocat {
+        return format!(
+            "mkdir -p /opt/vocat/bin /opt/vocat/config /opt/vocat/data /opt/vocat/logs && \
+             cp {bin_wsl} /opt/vocat/bin/vocat && \
+             printf '%s\\n' {variant_id} > /opt/vocat/config/desktop-backend-variant && \
+             chmod +x /opt/vocat/bin/vocat && \
+             if [ ! -s /opt/vocat/data/vocat.db ]; then \
+               VOCAT_BOOTSTRAP_PASSWORD=$(dd if=/dev/urandom bs=18 count=1 2>/dev/null | base64 | tr -dc 'A-Za-z0-9' | head -c 24); \
+               if [ -z \"$VOCAT_BOOTSTRAP_PASSWORD\" ]; then VOCAT_BOOTSTRAP_PASSWORD=\"vocat-$(date +%s)\"; fi; \
+               printf '%s\\n' \"$VOCAT_BOOTSTRAP_PASSWORD\" | VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db /opt/vocat/bin/vocat bootstrap-admin >/opt/vocat/logs/bootstrap-admin.log 2>&1 && \
+               printf 'VoCat 初始管理员: admin / %s\\n' \"$VOCAT_BOOTSTRAP_PASSWORD\" | tee /opt/vocat/config/desktop-bootstrap-admin.txt; \
+             elif [ -f /opt/vocat/config/desktop-bootstrap-admin.txt ]; then \
+               cat /opt/vocat/config/desktop-bootstrap-admin.txt; \
+             fi"
+        );
+    }
     format!(
         "mkdir -p /opt/vohive/bin /opt/vohive/config /opt/vohive/data /opt/vohive/logs && \
          cp {bin_wsl} /opt/vohive/bin/vohive && \
@@ -544,7 +546,10 @@ fn deployed_backend_variant_id() -> Result<Option<String>, String> {
         Err(err) => return Err(err),
     }
     let out = wsl::run_root_shell_timeout(
-        "if [ -f /opt/vohive/config/desktop-backend-variant ]; then cat /opt/vohive/config/desktop-backend-variant; fi",
+        "marker=''; \
+         if pgrep -f '^/opt/vocat/bin/vocat( |$)' >/dev/null; then marker=/opt/vocat/config/desktop-backend-variant; \
+         elif pgrep -f '^/opt/vohive/bin/vohive( |$)' >/dev/null; then marker=/opt/vohive/config/desktop-backend-variant; fi; \
+         if [ -n \"$marker\" ] && [ -f \"$marker\" ]; then cat \"$marker\"; fi",
         Duration::from_secs(3),
     )
     .map_err(|err| err.to_string())?;
@@ -557,6 +562,73 @@ fn deployed_backend_variant_id() -> Result<Option<String>, String> {
     } else {
         Ok(Some(variant))
     }
+}
+
+fn backend_start_args(variant_id: &str) -> Vec<&'static str> {
+    if variant_id == VARIANT_VOCAT {
+        vec![
+            "-d",
+            wsl::DISTRO,
+            "-u",
+            "root",
+            "--cd",
+            "/opt/vocat",
+            "--exec",
+            "/usr/bin/env",
+            "VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db",
+            "/opt/vocat/bin/vocat",
+            "serve",
+        ]
+    } else {
+        vec![
+            "-d",
+            wsl::DISTRO,
+            "-u",
+            "root",
+            "--cd",
+            "/opt/vohive",
+            "--exec",
+            "/opt/vohive/bin/vohive",
+            "-c",
+            "/opt/vohive/config/config.yaml",
+        ]
+    }
+}
+
+fn variant_install_dir(variant_id: &str) -> &'static str {
+    if variant_id == VARIANT_VOCAT {
+        "/opt/vocat"
+    } else {
+        "/opt/vohive"
+    }
+}
+
+fn variant_resource_path(variant: &BackendVariant) -> String {
+    if variant.id == VARIANT_VOCAT {
+        format!("resources/vocat/{}", RESOURCE_VOCAT)
+    } else {
+        format!("resources/vohive/{}", variant.resource_name)
+    }
+}
+
+fn backend_deploy_success_logs(variant: &BackendVariant, stdout: &str) -> Vec<String> {
+    let mut logs = vec![format!(
+        "已部署 {} {} 到 WSL {}",
+        variant.name,
+        variant.version,
+        variant_install_dir(&variant.id)
+    )];
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        logs.push(stdout.to_string());
+    }
+    logs
+}
+
+fn packaged_vocat_version() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let resource = exe.parent()?.join("resources/vocat/VOCAT_VERSION");
+    std::fs::read_to_string(resource).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,20 +790,20 @@ fn action(
 }
 
 fn backend_stop_script() -> &'static str {
-    r#"pids=$(pgrep -f '^/opt/vohive/bin/vohive( |$)' || true)
+    r#"pids=$({ pgrep -f '^/opt/vohive/bin/vohive( |$)' || true; pgrep -f '^/opt/vocat/bin/vocat( |$)' || true; } | sort -u)
 if [ -z "$pids" ]; then
   echo no-process
   exit 0
 fi
 kill $pids || true
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-  if ! pgrep -f '^/opt/vohive/bin/vohive( |$)' >/dev/null; then
+  if ! pgrep -f '^/opt/vohive/bin/vohive( |$)' >/dev/null && ! pgrep -f '^/opt/vocat/bin/vocat( |$)' >/dev/null; then
     echo stopped
     exit 0
   fi
   sleep 0.2
 done
-pids=$(pgrep -f '^/opt/vohive/bin/vohive( |$)' || true)
+pids=$({ pgrep -f '^/opt/vohive/bin/vohive( |$)' || true; pgrep -f '^/opt/vocat/bin/vocat( |$)' || true; } | sort -u)
 if [ -n "$pids" ]; then
   kill -KILL $pids || true
 fi
@@ -741,19 +813,22 @@ echo killed"#
 #[cfg(test)]
 mod tests {
     use super::{
-        backend_deploy_script, backend_stop_script, external_backend_status, usb_attach_preflight,
+        backend_deploy_script, backend_deploy_success_logs, backend_running_variant_guard,
+        backend_start_args, backend_stop_script, external_backend_status, usb_attach_preflight,
         usb_attach_step, validate_vohive_resources, wsl_required_action_preflight, UsbAttachStep,
     };
     use crate::backend_variants::{
-        by_id as backend_variant_by_id, variants as backend_variants, VARIANT_ORSON,
+        by_id as backend_variant_by_id, variants as backend_variants, VARIANT_ORSON, VARIANT_VOCAT,
+        VARIANT_VOHIVE_PLUS,
     };
     use crate::models::UsbDevice;
     use std::fs;
 
     #[test]
-    fn backend_stop_script_targets_only_opt_vohive_processes() {
+    fn backend_stop_script_targets_managed_runtime_processes() {
         let script = backend_stop_script();
         assert!(script.contains("pgrep -f '^/opt/vohive/bin/vohive( |$)'"));
+        assert!(script.contains("pgrep -f '^/opt/vocat/bin/vocat( |$)'"));
         assert!(!script.contains("pkill -f"));
     }
 
@@ -777,6 +852,16 @@ mod tests {
         let message = status.message.unwrap_or_default();
         assert!(message.contains("健康检查正常"));
         assert!(message.contains("pgrep timeout"));
+    }
+
+    #[test]
+    fn backend_running_variant_guard_rejects_unmarked_running_slot() {
+        let message = backend_running_variant_guard(VARIANT_VOHIVE_PLUS, Ok(None))
+            .expect("running unmarked /opt/vohive slot must not be reused silently");
+
+        assert!(message.contains("未标记"));
+        assert!(message.contains("停止后端"));
+        assert!(message.contains("重新启动"));
     }
 
     #[test]
@@ -875,7 +960,53 @@ mod tests {
     }
 
     #[test]
-    fn backend_variants_include_default_and_orson_fallback() {
+    fn vocat_deploy_script_installs_runtime_to_opt_vocat() {
+        let script = backend_deploy_script(
+            VARIANT_VOCAT,
+            "'/mnt/f/desktop/resources/vocat/vocat-linux-amd64'",
+            "'/mnt/f/desktop/resources/vohive/vohive-open_linux_amd64'",
+            "'/mnt/f/desktop/resources/vohive/config.example.yaml'",
+            "'/mnt/f/desktop/resources/vohive/vohive-usb-prepare.sh'",
+        );
+
+        assert!(script.contains(
+            "cp '/mnt/f/desktop/resources/vocat/vocat-linux-amd64' /opt/vocat/bin/vocat"
+        ));
+        assert!(
+            script.contains("printf '%s\\n' 'vocat' > /opt/vocat/config/desktop-backend-variant")
+        );
+        assert!(script.contains("VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db"));
+        assert!(script.contains("bootstrap-admin"));
+        assert!(script.contains("desktop-bootstrap-admin.txt"));
+        assert!(script.contains("VoCat 初始管理员"));
+        assert!(!script.contains("/opt/vohive/bin/vohive &&"));
+    }
+
+    #[test]
+    fn vocat_deploy_success_logs_bootstrap_credentials_from_stdout() {
+        let variant = backend_variant_by_id(VARIANT_VOCAT).unwrap();
+        let logs =
+            backend_deploy_success_logs(&variant, "VoCat 初始管理员: admin / test-password\n");
+
+        assert!(logs.iter().any(|line| line.contains("已部署 VoCat")));
+        assert!(logs
+            .iter()
+            .any(|line| line.contains("VoCat 初始管理员: admin / test-password")));
+    }
+
+    #[test]
+    fn backend_start_args_run_vocat_from_opt_vocat() {
+        let args = backend_start_args(VARIANT_VOCAT);
+
+        assert!(args.windows(2).any(|pair| pair == ["--cd", "/opt/vocat"]));
+        assert!(args.contains(&"/usr/bin/env"));
+        assert!(args.contains(&"VOCAT_DATABASE_PATH=/opt/vocat/data/vocat.db"));
+        assert!(args.contains(&"/opt/vocat/bin/vocat"));
+        assert!(args.contains(&"serve"));
+    }
+
+    #[test]
+    fn backend_variants_include_default_iniwex_backup_and_vocat_runtime() {
         let variants = backend_variants();
 
         assert!(variants.iter().any(|variant| {
@@ -884,7 +1015,14 @@ mod tests {
         assert!(variants.iter().any(|variant| {
             variant.id == VARIANT_ORSON
                 && variant.resource_name == "vohive-orson-v1.5.5_linux_amd64"
-                && variant.description.contains("备用诊断后端")
+                && variant.name == "iniwex5/vohive"
+                && variant.description == "原项目 iniwex5/vohive 1.5.5 版本备份。"
+        }));
+        assert!(variants.iter().any(|variant| {
+            variant.id == VARIANT_VOCAT
+                && variant.resource_name == "vocat-linux-amd64"
+                && variant.name == "VoCat"
+                && variant.description == "第三方运行体，部署到 /opt/vocat。"
         }));
     }
 }
