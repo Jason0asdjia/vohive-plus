@@ -845,7 +845,7 @@ func (p *Pool) waitPostSwitchSIMAuthReady(deviceID string, worker *Worker) error
 	return nil
 }
 
-func (p *Pool) restorePostSwitchConnectivity(deviceID string, worker *Worker, snapshot esimSwitchContext, restoreGateErr error, markDegraded bool) {
+func (p *Pool) restorePostSwitchConnectivity(deviceID string, worker *Worker, snapshot esimSwitchContext, restoreGateErr error, markDegraded bool, policyApplied bool) {
 	if worker.Config.VoWiFiEnabled {
 		if restoreGateErr != nil {
 			if markDegraded {
@@ -865,7 +865,20 @@ func (p *Pool) restorePostSwitchConnectivity(deviceID string, worker *Worker, sn
 			}
 		}
 	}
+	if policyApplied {
+		return
+	}
 	p.restoreRadioDataForSwitchSnapshot(deviceID, worker, snapshot, "post_switch_finalize", worker.Config.ESIMSwitch.RadioCycle)
+}
+
+func shouldBringRadioOnlineForPostSwitchIdentity(worker *Worker, snapshot esimSwitchContext) bool {
+	if worker == nil {
+		return false
+	}
+	if worker.Config.ESIMSwitch.RadioCycle {
+		return true
+	}
+	return snapshot.VoWiFiActiveBefore && snapshot.FlightModeBefore
 }
 
 func (p *Pool) setOperatingModeWithRetry(worker *Worker, mode backend.OperatingMode) error {
@@ -1034,20 +1047,21 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 		"qmi_connected_before", snapshot.QMIConnectedBefore,
 		"network_enabled_before", snapshot.NetworkEnabledBefore)
 
-	convergence := p.runPostSwitchConvergence(deviceID, token, worker, snapshot)
-	if convergence.Degraded {
-		p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseDegraded)
-		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
-		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, fmt.Errorf("%s", convergence.Reason), false)
-		return
-	}
-
-	if worker.Config.ESIMSwitch.RadioCycle {
+	radioOnlineForIdentity := shouldBringRadioOnlineForPostSwitchIdentity(worker, snapshot)
+	if radioOnlineForIdentity {
 		attachTimeout := time.Duration(worker.Config.ESIMSwitch.NASAttachTimeoutMS) * time.Millisecond
 		p.bringRadioOnlineAfterSwitch(deviceID, worker, snapshot, attachTimeout)
 		if !p.switchTokenStillCurrent(deviceID, token, "radio_online") {
 			return
 		}
+	}
+
+	convergence := p.runPostSwitchConvergence(deviceID, token, worker, snapshot)
+	if convergence.Degraded {
+		p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseDegraded)
+		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
+		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, fmt.Errorf("%s", convergence.Reason), false, false)
+		return
 	}
 
 	p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseIdentityRefresh)
@@ -1074,9 +1088,10 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 	if identityRefreshErr != nil {
 		p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseDegraded)
 		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
-		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, identityRefreshErr, false)
+		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, identityRefreshErr, false, false)
 		return
 	}
+	policyResult := p.resolveAndApplyPolicy(worker, "esim_switched")
 	p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 	var restoreGateErr error
 	if worker.Config.VoWiFiEnabled {
@@ -1094,7 +1109,7 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 	if !p.switchTokenStillCurrent(deviceID, token, "vowifi_restore") {
 		return
 	}
-	p.restorePostSwitchConnectivity(deviceID, worker, snapshot, restoreGateErr, true)
+	p.restorePostSwitchConnectivity(deviceID, worker, snapshot, restoreGateErr, true, policyResult.Applied)
 
 	// 切卡过程中 SIM power cycle 会导致 overview 缓存被清空且重载失败（模组正在重置），
 	// 此处模组已恢复，触发一次 overview 重新加载以恢复 profile 列表。

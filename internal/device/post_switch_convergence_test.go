@@ -238,6 +238,21 @@ func TestRunPostSwitchConvergenceFlagOffUsesLegacyPollingOnly(t *testing.T) {
 	}
 }
 
+func TestRunPostSwitchConvergenceReadinessUnsupportedFallsBackToLiveIdentityPolling(t *testing.T) {
+	events := []string{}
+	worker := &Worker{
+		ID:      "dev-1",
+		Config:  config.DeviceConfig{ID: "dev-1"},
+		Backend: &startNetworkMBIMBackendStub{events: &events},
+	}
+
+	result := (&Pool{}).runPostSwitchConvergence("dev-1", 7, worker, esimSwitchContext{TargetICCID: "target"})
+
+	if !result.Ready || result.Degraded {
+		t.Fatalf("result=%+v want readiness fallback to continue with live identity polling", result)
+	}
+}
+
 func TestRunPostSwitchConvergenceEventGatedSuccessReturnsBeforePollingFallback(t *testing.T) {
 	worker := &Worker{Config: config.DeviceConfig{ESIMSwitch: config.ESIMSwitchConfig{
 		EventGatedConverge: true,
