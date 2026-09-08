@@ -206,3 +206,7 @@
 - 桌面端本地构建和 GitHub Action 构建必须走同一类资源语义：第三方运行体缺失时不能静默跳过，否则本地 `tauri build` 会生成看似成功但缺资源的桌面包。同步脚本应明确复制本地源、下载并校验远程源，或带可操作兜底提示失败。
 - 对“可选第三方运行体”要区分本地开发体验和官方发布完整性：本地构建可在 GitHub 不可达时软跳过并汇总提示，官方 Release Action 仍应强制下载/校验/打包，避免正式产物缺资源。
 - Windows 桌面程序不能只假设关闭最后窗口就会退出进程。Tauri v2 桌面壳应在窗口关闭/销毁和无窗口事件循环状态下显式清理并退出，否则无窗口后台进程会锁住 release exe，让后续编译时间看起来“不更新”。
+- eSIM 切卡成功后的权威运行态是目标卡 `card_policies`，不是切卡前快照；旧快照只适合用于切卡失败、身份未确认或目标策略不可用时的兜底恢复。
+- VoWiFi 启动前会把模组临时切到 `CFUN=4`/飞行模式；如果此时切 eSIM，后处理需要先临时拉 `ModeOnline` 触发 AT/SIM 身份重新加载，再轮询目标 ICCID/IMSI。
+- 切卡后的 UIM readiness 只是加速确认路径；backend 不支持 readiness 时不应直接判 degraded，应回退到 live `ICCID/IMSI` 轮询。
+- 目标卡策略要求 VoWiFi 但 SIMAuth gate 暂时不就绪时，不应回滚到旧卡在线/飞行快照；应保留目标 VoWiFi 期望态和 desired recover 退避，让低频恢复在 gate 就绪后继续。

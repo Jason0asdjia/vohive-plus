@@ -536,6 +536,174 @@ func TestHandleESIMSwitchAfterRadioCycleOnlineThenSnapshotRestore(t *testing.T) 
 	}
 }
 
+func TestHandleESIMSwitchAfterVoWiFiFlightBringsRadioOnlineBeforeIdentityRefresh(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	targetICCID := "89441600001002274233"
+	be := &esimSwitchRestoreBackendStub{
+		mode:      backend.BackendQMI,
+		getMode:   backend.ModeRFOff,
+		liveICCID: "89441000400316488370",
+		liveIMSI:  "234159612842639",
+	}
+	be.setModeHook = func(mode backend.OperatingMode) {
+		be.getMode = mode
+		if mode == backend.ModeOnline {
+			be.liveICCID = targetICCID
+			be.liveIMSI = "234209612842639"
+		}
+	}
+	w := &Worker{
+		ID: "dev-1",
+		Config: config.DeviceConfig{
+			ID:             "dev-1",
+			VoWiFiEnabled:  false,
+			NetworkEnabled: false,
+		},
+		Backend: be,
+	}
+	p.workers["dev-1"] = w
+	withSwitchSnapshot(p, "dev-1", esimSwitchContext{
+		TargetICCID:        targetICCID,
+		VoWiFiActiveBefore: true,
+		FlightModeBefore:   true,
+		ICCIDBefore:        "89441000400316488370",
+		IMSIBefore:         "234159612842639",
+	})
+
+	p.handleESIMSwitchAfter("dev-1", 0)
+
+	if len(be.setCalls) == 0 || be.setCalls[0] != backend.ModeOnline {
+		t.Fatalf("first SetOperatingMode call=%v want Online before identity refresh", be.setCalls)
+	}
+	if got := w.ConfirmedICCID(); got != targetICCID {
+		t.Fatalf("confirmed ICCID=%q want %q", got, targetICCID)
+	}
+}
+
+func TestHandleESIMSwitchAfterAppliesTargetCardPolicyInsteadOfSnapshotFlight(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	targetICCID := "89441600001002274233"
+	p.SetPolicyResolver(&stubPolicyResolver{
+		pol: cardpolicy.Policy{
+			ICCID:           targetICCID,
+			NetworkEnabled:  false,
+			VoWiFiEnabled:   false,
+			AirplaneEnabled: false,
+			RoamingEnabled:  true,
+			IPVersion:       "v4",
+		},
+	})
+	be := &esimSwitchRestoreBackendStub{
+		mode:      backend.BackendQMI,
+		getMode:   backend.ModeRFOff,
+		liveICCID: targetICCID,
+		liveIMSI:  "234209612842639",
+	}
+	be.setModeHook = func(mode backend.OperatingMode) {
+		be.getMode = mode
+	}
+	w := &Worker{
+		ID: "dev-1",
+		Config: config.DeviceConfig{
+			ID:             "dev-1",
+			NetworkEnabled: true,
+			VoWiFiEnabled:  true,
+		},
+		Backend: be,
+	}
+	w.state.Identity.ICCID = "89441000400316488370"
+	w.state.Identity.IMSI = "234159612842639"
+	p.workers["dev-1"] = w
+	withSwitchSnapshot(p, "dev-1", esimSwitchContext{
+		TargetICCID:      targetICCID,
+		FlightModeBefore: true,
+		ICCIDBefore:      "89441000400316488370",
+		IMSIBefore:       "234159612842639",
+	})
+
+	p.handleESIMSwitchAfter("dev-1", 0)
+
+	if !reflect.DeepEqual(be.setCalls, []backend.OperatingMode{backend.ModeOnline}) {
+		t.Fatalf("setCalls=%v want only target policy Online, not snapshot RFOff", be.setCalls)
+	}
+	if w.Config.VoWiFiEnabled || w.Config.NetworkEnabled || w.Config.AirplaneEnabled {
+		t.Fatalf("target card policy was not projected: %+v", w.Config)
+	}
+}
+
+func TestHandleESIMSwitchAfterKeepsTargetVoWiFiPolicyWhenSIMAuthGateFails(t *testing.T) {
+	withFastPostSwitchSIMAuthRecovery(t)
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	oldICCID := "89441000400316488370"
+	targetICCID := "89441600001002274233"
+	p.SetPolicyResolver(desiredVoWiFiMapPolicyResolver{policies: map[string]cardpolicy.Policy{
+		oldICCID: {
+			ICCID:           oldICCID,
+			NetworkEnabled:  true,
+			VoWiFiEnabled:   false,
+			AirplaneEnabled: false,
+			RoamingEnabled:  true,
+			IPVersion:       "v4",
+		},
+		targetICCID: {
+			ICCID:           targetICCID,
+			NetworkEnabled:  false,
+			VoWiFiEnabled:   true,
+			AirplaneEnabled: false,
+			RoamingEnabled:  true,
+			IPVersion:       "v4",
+		},
+	}})
+	be := &esimSwitchRestoreBackendStub{
+		mode:               backend.BackendQMI,
+		getMode:            backend.ModeOnline,
+		liveICCID:          targetICCID,
+		liveIMSI:           "234209612842639",
+		resolvedSIMAuthErr: errors.New("sim_auth_aid_not_ready"),
+	}
+	w := &Worker{
+		ID: "dev-1",
+		Config: config.DeviceConfig{
+			ID:             "dev-1",
+			NetworkEnabled: true,
+			VoWiFiEnabled:  false,
+		},
+		Backend: be,
+	}
+	w.state.Identity.Ready = true
+	w.state.Identity.ICCID = oldICCID
+	w.state.Identity.IMSI = "234159612842639"
+	p.workers["dev-1"] = w
+	withSwitchSnapshot(p, "dev-1", esimSwitchContext{
+		TargetICCID:          targetICCID,
+		FlightModeBefore:     false,
+		NetworkEnabledBefore: true,
+		ICCIDBefore:          oldICCID,
+		IMSIBefore:           "234159612842639",
+	})
+	p.voWiFiHost().LifecycleControllerForTest().SetRunForTest(func(ctx context.Context, cmd vowifihost.LifecycleCommand) error {
+		if cmd.Kind != vowifihost.LifecycleCommandRecover {
+			t.Fatalf("unexpected lifecycle command: %s", cmd.Kind.String())
+		}
+		return errors.New("recover waits for SIMAuth gate")
+	})
+
+	p.handleESIMSwitchAfter("dev-1", 0)
+
+	if !w.Config.VoWiFiEnabled || !w.Config.AirplaneEnabled || w.Config.NetworkEnabled {
+		t.Fatalf("target VoWiFi policy was not preserved after gate failure: %+v", w.Config)
+	}
+	if len(be.setCalls) != 0 {
+		t.Fatalf("setCalls=%v want no snapshot Online fallback after target policy", be.setCalls)
+	}
+	if !p.voWiFiHost().HasDesiredRecoverState("dev-1") {
+		t.Fatal("target VoWiFi recover state should remain for low-frequency retry")
+	}
+}
+
 func TestHandleESIMSwitchAfterRecoversSIMAuthBeforeVoWiFiRestore(t *testing.T) {
 	withFastPostSwitchSIMAuthRecovery(t)
 	p := NewPool(&config.Config{})

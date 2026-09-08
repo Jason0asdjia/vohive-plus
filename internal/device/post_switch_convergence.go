@@ -317,7 +317,11 @@ func (p *Pool) runPostSwitchConvergence(deviceID string, token uint64, worker *W
 	}
 	readiness, ok := worker.Backend.(postSwitchReadinessProvider)
 	if !ok {
-		return postSwitchConvergenceResult{Degraded: true, Reason: "uim_readiness_not_supported"}
+		logger.Info("eSIM 切卡后 UIM readiness 不可用，回退到 live SIM 身份轮询",
+			"device", deviceID,
+			"switch_token", token,
+			"target_iccid", snapshot.TargetICCID)
+		return postSwitchConvergenceResult{Ready: true, Reason: "uim_readiness_not_supported_live_identity_fallback"}
 	}
 	var reloader any = worker.Backend
 	reinitWindow := effectivePostSwitchReinitWindow(worker.Config.ESIMSwitch)
@@ -342,7 +346,6 @@ func (p *Pool) runPostSwitchConvergence(deviceID string, token uint64, worker *W
 				"switch_token", token,
 				"target_iccid", snapshot.TargetICCID,
 				"reinit_window", reinitWindow.String())
-			p.resolveAndApplyPolicy(worker, "esim_switched")
 			return postSwitchConvergenceResult{Ready: true, Reason: "ready"}
 		case reinitTimeout:
 			if power, ok := reloader.(postSwitchSIMPowerController); ok {
@@ -380,8 +383,5 @@ func (p *Pool) runPostSwitchConvergence(deviceID string, token uint64, worker *W
 		"degraded", result.Degraded,
 		"reason", result.Reason,
 		"slot", result.Slot)
-	if result.Ready {
-		p.resolveAndApplyPolicy(worker, "esim_switched")
-	}
 	return result
 }

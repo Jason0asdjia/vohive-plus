@@ -1317,3 +1317,26 @@
 - [x] 2026-09-07 FIX：桌面窗口关闭后进程可能残留为无窗口后台进程，导致后续 release 编译无法替换 `target/release/vohive-plus-desktop.exe`；已在 Tauri run event 层处理窗口关闭/销毁和无窗口状态，退出前释放桌面壳持有的 WSL 后端与保活子进程。
 - [x] 2026-09-07 VERIFY：`node --test desktop\tests\*.test.mjs` 27 项通过；`cargo test --manifest-path desktop\src-tauri\Cargo.toml` 43 项通过；`pnpm --dir desktop build` 通过；`node --test desktop\tests\syncVocatResource.test.mjs` 覆盖本地复制、latest 下载和 GitHub 不可达软跳过三条路径。
 - [x] 2026-09-07 VERIFY：用户手动放入 `desktop/src-tauri/resources/vocat/vocat-linux-amd64` 后，真实执行 `pnpm --dir desktop sync:vocat` 复用本地资源；`pnpm --dir desktop tauri build` 成功，生成 `desktop/src-tauri/target/release/vohive-plus-desktop.exe`，修改时间 `2026/9/7 15:07:34`，大小 `8,828,928` 字节；`target/release/resources/vocat/` 已包含 `vocat-linux-amd64`，且编译后没有 `vohive-plus-desktop` 残留进程。
+
+## 阶段 6Y：eSIM 切卡后按目标卡策略收敛
+
+### 根因调查
+
+- [x] 2026-09-08 日志显示从 VOXI 切到 Lebara 后，eUICC profile 状态与 AT 实时身份出现分裂：profile 列表显示目标卡启用，但 `AT+QCCID`/`AT+CIMI` 仍读到旧卡。
+- [x] 切卡前 VoWiFi 已启用时，模组处于 `CFUN=4`，现有后处理把该状态当作切卡前快照恢复，未先临时拉 Online 触发 SIM 身份重新加载。
+- [x] 当前 `restorePostSwitchConnectivity` 仍按切卡前快照恢复网络/飞行模式，未在目标 ICCID 确认后重新投影目标卡 `card_policies`。
+
+### 实施计划
+
+- [x] RED：新增单测复现 VoWiFi 临时飞行模式下切卡后应先拉 Online 才能读到目标 ICCID。
+- [x] RED：新增单测确认目标 ICCID 生效后按目标卡策略恢复，而不是沿用旧卡快照。
+- [x] RED：新增单测确认目标卡策略要求 VoWiFi 且 SIMAuth gate 暂时失败时，仍保留目标 VoWiFi 期望态和低频重试状态。
+- [x] GREEN：最小修改 eSIM 切卡后处理，目标身份确认后重新投影目标卡策略；仅在身份未确认、切卡失败或目标策略不可用时使用快照兜底。
+- [x] VERIFY：运行 eSIM 切卡恢复相关 Go 测试，并按影响范围复跑 `internal/device` 测试。
+
+### 评审记录
+
+- [x] 2026-09-08 RED：新增 3 条回归测试，分别覆盖 VoWiFi 临时飞行模式下先 Online 触发目标 ICCID 生效、目标 ICCID 生效后按目标卡 `card_policies` 收敛、目标 VoWiFi 策略在 SIMAuth gate 失败时保留 desired recover 重试。
+- [x] 2026-09-08 GREEN：切卡后若 `RadioCycle=true` 或切卡前处于 VoWiFi 临时飞行模式，先临时拉 `ModeOnline` 再读取 live ICCID/IMSI；UIM readiness backend 不支持时回退 live 身份轮询；目标身份确认后再执行 `resolveAndApplyPolicy("esim_switched")`，策略已应用时不再按旧快照覆盖运行态。
+- [x] 2026-09-08 VERIFY：`go test ./internal/device -run 'TestHandleESIMSwitchAfter(VoWiFiFlightBringsRadioOnlineBeforeIdentityRefresh|AppliesTargetCardPolicyInsteadOfSnapshotFlight|KeepsTargetVoWiFiPolicyWhenSIMAuthGateFails)$|TestRunPostSwitchConvergenceReadinessUnsupportedFallsBackToLiveIdentityPolling$' -count=1 -v` 通过。
+- [x] 2026-09-08 VERIFY：`go test ./internal/device -run 'TestHandleESIMSwitchAfter|TestRunPostSwitchConvergence|TestPostSwitchDecision|TestResolveAndApplyPolicy|TestProjection' -count=1 -v` 通过，用时约 33.6 秒。
