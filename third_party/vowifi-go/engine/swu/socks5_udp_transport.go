@@ -61,7 +61,7 @@ func (t *socks5UDPIKETransport) ExchangeIKE(ctx context.Context, request []byte)
 	}
 	assoc, err := newSOCKS5UDPAssociation(ctx, t.Proxy, timeout)
 	if err != nil {
-		return nil, err
+		return nil, t.wrapIKEExchangeError("association", err, nil, len(request), timeout)
 	}
 	defer assoc.Close(ctx)
 	wire := request
@@ -69,16 +69,42 @@ func (t *socks5UDPIKETransport) ExchangeIKE(ctx context.Context, request []byte)
 		wire = append([]byte{0, 0, 0, 0}, request...)
 	}
 	if err := assoc.WriteToTarget(ctx, t.RemoteAddr, wire, timeout); err != nil {
-		return nil, err
+		return nil, t.wrapIKEExchangeError("write", err, assoc, len(request), timeout)
 	}
 	payload, err := assoc.ReadFromTarget(ctx, t.RemoteAddr, timeout, t.ReadBufferSize)
 	if err != nil {
-		return nil, err
+		return nil, t.wrapIKEExchangeError("read", err, assoc, len(request), timeout)
 	}
 	if len(payload) >= 4 && payload[0] == 0 && payload[1] == 0 && payload[2] == 0 && payload[3] == 0 {
 		payload = payload[4:]
 	}
 	return payload, nil
+}
+
+func (t *socks5UDPIKETransport) wrapIKEExchangeError(stage string, err error, assoc *socks5UDPAssociation, requestLen int, timeout time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	local := ""
+	relay := ""
+	if assoc != nil {
+		if assoc.udp != nil && assoc.udp.LocalAddr() != nil {
+			local = assoc.udp.LocalAddr().String()
+		}
+		if assoc.relay != nil {
+			relay = assoc.relay.String()
+		}
+	}
+	return fmt.Errorf("socks5 udp ike %s failed: target=%s proxy=%s relay=%s local_udp=%s non_esp_marker=%t timeout=%s request_len=%d: %w",
+		stage,
+		strings.TrimSpace(t.RemoteAddr),
+		socks5ProxyLabel(t.Proxy),
+		relay,
+		local,
+		t.UseNonESPMarker,
+		timeout.String(),
+		requestLen,
+		err)
 }
 
 type SOCKS5UDPESPPacketTransport struct {
@@ -416,10 +442,27 @@ func socks5UDPAssociate(conn io.ReadWriter, proxyAddr string) (*net.UDPAddr, err
 		return nil, err
 	}
 	proxyHost, _, _ := net.SplitHostPort(proxyAddr)
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	if shouldUseSOCKS5ProxyHostForRelay(host, proxyHost) {
 		host = proxyHost
 	}
 	return net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+}
+
+func shouldUseSOCKS5ProxyHostForRelay(relayHost, proxyHost string) bool {
+	relayHost = strings.Trim(strings.TrimSpace(relayHost), "[]")
+	proxyHost = strings.Trim(strings.TrimSpace(proxyHost), "[]")
+	if proxyHost == "" {
+		return false
+	}
+	if relayHost == "" || relayHost == "0.0.0.0" || relayHost == "::" {
+		return true
+	}
+	relayIP := net.ParseIP(relayHost)
+	if relayIP == nil || !relayIP.IsLoopback() {
+		return false
+	}
+	proxyIP := net.ParseIP(proxyHost)
+	return proxyIP == nil || !proxyIP.IsLoopback()
 }
 
 func socks5UDPFrame(target string, payload []byte) ([]byte, error) {

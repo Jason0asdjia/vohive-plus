@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,6 +43,34 @@ func TestIKEPacketTunnelManagerUsesSOCKS5UDPProxyForIKETransport(t *testing.T) {
 	}
 	if !bytes.Equal(req.Payload, []byte{0, 0, 0, 0, 0x01, 0x02, 0x03}) {
 		t.Fatalf("proxy payload=%x", req.Payload)
+	}
+}
+
+func TestSOCKS5UDPIKETransportReadTimeoutIncludesTargetAndProxy(t *testing.T) {
+	proxy := newFakeSOCKS5UDPProxy(t)
+	defer proxy.Close()
+
+	transport := &socks5UDPIKETransport{
+		Proxy:           &ProxyConfig{ID: "NL", Addr: proxy.Addr(), Enabled: true},
+		RemoteAddr:      "epdg.epc.mnc004.mcc204.pub.3gppnetwork.org:4500",
+		Timeout:         10 * time.Millisecond,
+		UseNonESPMarker: true,
+	}
+	_, err := transport.ExchangeIKE(context.Background(), []byte{0x01, 0x02, 0x03})
+	if err == nil {
+		t.Fatal("ExchangeIKE() err=nil, want timeout")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"socks5 udp ike read failed",
+		"target=epdg.epc.mnc004.mcc204.pub.3gppnetwork.org:4500",
+		"proxy=NL(",
+		"non_esp_marker=true",
+		"request_len=3",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error %q does not contain %q", msg, want)
+		}
 	}
 }
 
@@ -86,6 +115,21 @@ func TestIKEPacketTunnelManagerUsesSOCKS5UDPProxyForESPTransport(t *testing.T) {
 	}
 }
 
+func TestSOCKS5UDPAssociateRewritesLoopbackRelayForRemoteProxy(t *testing.T) {
+	conn := &scriptedSOCKS5Conn{read: []byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x13, 0xc7}}
+
+	relay, err := socks5UDPAssociate(conn, "192.0.2.20:7891")
+	if err != nil {
+		t.Fatalf("socks5UDPAssociate() error=%v", err)
+	}
+	if got := relay.String(); got != "192.0.2.20:5063" {
+		t.Fatalf("relay=%q, want 192.0.2.20:5063", got)
+	}
+	if !strings.HasPrefix(string(conn.written), string([]byte{0x05, 0x03, 0x00, 0x01})) {
+		t.Fatalf("associate request prefix=%x", conn.written)
+	}
+}
+
 type fakeSOCKS5UDPProxy struct {
 	t         *testing.T
 	tcp       net.Listener
@@ -98,6 +142,25 @@ type fakeSOCKS5UDPProxy struct {
 type fakeSOCKS5UDPRequest struct {
 	Target  string
 	Payload []byte
+}
+
+type scriptedSOCKS5Conn struct {
+	read    []byte
+	written []byte
+}
+
+func (c *scriptedSOCKS5Conn) Read(p []byte) (int, error) {
+	if len(c.read) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.read)
+	c.read = c.read[n:]
+	return n, nil
+}
+
+func (c *scriptedSOCKS5Conn) Write(p []byte) (int, error) {
+	c.written = append(c.written, p...)
+	return len(p), nil
 }
 
 func newFakeSOCKS5UDPProxy(t *testing.T) *fakeSOCKS5UDPProxy {

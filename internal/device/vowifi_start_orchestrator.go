@@ -230,6 +230,13 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 		"actual_source", prepared.IMSIdentity.ActualSource,
 		"aka_app_preference", prepared.IMSIdentity.AKAAppPreference,
 		"applied", prepared.IMSIdentity.Applied)
+	if preferredAKA, ok := akaProvider.(innersim.AKAWithPreferenceProvider); ok && strings.TrimSpace(prepared.IMSIdentity.AKAAppPreference) != "" {
+		startCtx.SIM = runtimehost.NewReaderSIMAdapter(innersim.WrapPreferredAKAProvider(preferredAKA, prepared.IMSIdentity.AKAAppPreference))
+		logger.Info("VoWiFi 已应用启动画像 AKA 应用偏好",
+			"trace_id", traceID,
+			"device", deviceID,
+			"aka_app_preference", prepared.IMSIdentity.AKAAppPreference)
+	}
 
 	if nc := w.NetworkController(); nc != nil {
 		w.rememberVoWiFiNetworkRestoreIntent()
@@ -276,7 +283,7 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 		}
 	}
 
-	startCtx.Proxy = resolveVoWiFiCountryProxy(startProfile.MCC, traceID, deviceID)
+	startCtx.Proxy = resolveVoWiFiUpstreamProxy(startProfile.MCC, traceID, deviceID)
 
 	startCtx.NetworkMode = modemIface.GetNetworkMode()
 	startCtx.StartupState = newVoWiFiSIMReadyStartupState(deviceID, swu.DataplaneModeUserspace, startCtx.NetworkMode, time.Now())
@@ -285,6 +292,26 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 }
 
 func resolveVoWiFiCountryProxy(homeMCC, traceID, deviceID string) *runtimehost.ProxyConfig {
+	return resolveVoWiFiUpstreamProxy(homeMCC, traceID, deviceID)
+}
+
+func resolveVoWiFiUpstreamProxy(homeMCC, traceID, deviceID string) *runtimehost.ProxyConfig {
+	defaultProxy, defaultErr := db.GetDefaultVoWiFiUpstreamProxy()
+	if defaultErr != nil {
+		logger.Warn("VoWiFi 启动前读取默认前置代理配置失败",
+			"trace_id", traceID,
+			"device", deviceID,
+			"err", defaultErr)
+	} else if defaultProxy != nil {
+		logger.Info("VoWiFi 默认前置代理已启用",
+			"trace_id", traceID,
+			"device", deviceID,
+			"home_mcc", strings.TrimSpace(homeMCC),
+			"upstream_proxy_id", defaultProxy.ID,
+			"proxy_route", "default_proxy")
+		return runtimeProxyConfigFromDB(defaultProxy)
+	}
+
 	proxy, countryCode, err := db.GetHomeMCCUpstreamProxy(homeMCC)
 	if err != nil {
 		logger.Warn("VoWiFi 启动前读取国家前置代理配置失败",
@@ -311,6 +338,13 @@ func resolveVoWiFiCountryProxy(homeMCC, traceID, deviceID string) *runtimehost.P
 		"proxy_country_code", countryCode,
 		"upstream_proxy_id", proxy.ID,
 		"proxy_route", "country_rule")
+	return runtimeProxyConfigFromDB(proxy)
+}
+
+func runtimeProxyConfigFromDB(proxy *db.UpstreamProxy) *runtimehost.ProxyConfig {
+	if proxy == nil {
+		return nil
+	}
 	return &runtimehost.ProxyConfig{
 		ID:       proxy.ID,
 		Addr:     proxy.Addr,

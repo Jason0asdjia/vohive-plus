@@ -297,7 +297,8 @@ const upstreamForm = ref<UpstreamProxy>({
   addr: '',
   username: '',
   password: '',
-  enabled: true
+  enabled: true,
+  vowifi_default: false
 })
 
 // ── 国家规则管理 Drawer ──
@@ -363,7 +364,8 @@ function openUpstreamDrawer(proxy?: UpstreamProxy) {
       addr: '',
       username: '',
       password: '',
-      enabled: true
+      enabled: true,
+      vowifi_default: false
     }
   } else {
     editingUpstream.value = proxy
@@ -381,6 +383,9 @@ async function saveUpstreamForm() {
   form.id = (form.id || '').trim()
   form.name = (form.name || '').trim()
   form.addr = (form.addr || '').trim()
+  if (!form.enabled) {
+    form.vowifi_default = false
+  }
 
   if (!form.id) {
     ElMessage.warning('ID 不能为空')
@@ -418,7 +423,7 @@ async function saveUpstreamForm() {
 
 async function deleteUpstream(proxy: UpstreamProxy) {
   const confirmed = await ElMessageBox.confirm(
-    `确定删除前置代理「${proxy.name || proxy.id}」？\n绑定到该代理的国家规则将自动删除，相关国家会恢复直连。`,
+    `确定删除前置代理「${proxy.name || proxy.id}」？\n绑定到该代理的国家规则将自动删除。`,
     '确认删除',
     { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
   ).then(() => true).catch(() => false)
@@ -433,6 +438,31 @@ async function deleteUpstream(proxy: UpstreamProxy) {
   } catch (e: unknown) {
     const err = toAppError(e)
     ElMessage.error(err.message || '删除失败')
+  }
+}
+
+async function setVoWiFiDefault(proxy: UpstreamProxy, enabled: boolean) {
+  if (enabled && !proxy.enabled) {
+    ElMessage.warning('请先启用该代理')
+    return
+  }
+
+  try {
+    const result = await upstreamStore.updateProxy(proxy.id, {
+      id: proxy.id,
+      name: proxy.name,
+      addr: proxy.addr,
+      username: proxy.username,
+      password: '',
+      enabled: proxy.enabled,
+      vowifi_default: enabled
+    })
+    if (!result.ok) throw new Error(result.error.message || '设置失败')
+    ElMessage.success(enabled ? '已设为 VoWiFi 默认代理' : '已取消 VoWiFi 默认代理')
+    await fetchUpstream()
+  } catch (e: unknown) {
+    const err = toAppError(e)
+    ElMessage.error(err.message || '设置失败')
   }
 }
 
@@ -467,7 +497,7 @@ async function doDeleteCountryRule(countryCode: string) {
   try {
     const result = await upstreamStore.deleteCountryRule(countryCode)
     if (!result.ok) throw new Error(result.error.message || '删除规则失败')
-    ElMessage.success('国家规则已删除，该国家将默认直连')
+    ElMessage.success('国家规则已删除')
     await fetchUpstream()
   } catch (e: unknown) {
     const err = toAppError(e)
@@ -560,7 +590,7 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
         <EmptyState
           v-else-if="upstreamStore.proxies.length === 0"
           title="暂无前置代理"
-          subtitle="点击「新增代理」创建 Socks5 前置代理，再按国家配置 VoWiFi 分流规则；未配置国家默认直连"
+          subtitle="点击「新增代理」创建 Socks5 前置代理，可设为 VoWiFi 默认"
         />
 
         <div v-else class="space-y-3">
@@ -584,6 +614,9 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
               <el-tag size="small" :type="proxy.enabled ? 'success' : 'info'">
                 {{ proxy.enabled ? '已启用' : '已禁用' }}
               </el-tag>
+              <el-tag v-if="proxy.vowifi_default" size="small" type="warning">
+                VoWiFi 默认
+              </el-tag>
               
               <div class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-600 border border-blue-200/60 dark:bg-blue-900/20 dark:text-blue-400 dark:border-blue-800/40">
                 <el-icon size="14"><Link24Regular /></el-icon>
@@ -597,6 +630,9 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
                   <el-icon size="14"><Link24Regular /></el-icon>
                   <span>国家规则</span>
                 </div>
+              </el-button>
+              <el-button size="small" :disabled="!proxy.enabled" @click="setVoWiFiDefault(proxy, !proxy.vowifi_default)">
+                {{ proxy.vowifi_default ? '取消默认' : '设为默认' }}
               </el-button>
               
               <el-button-group>
@@ -820,15 +856,23 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
           <div class="space-y-1">
             <label class="text-xs font-bold text-gray-500 uppercase tracking-wider">Socks5 地址</label>
             <el-input v-model="upstreamForm.addr" placeholder="host:port，例如 1.2.3.4:1080 或 [2001:db8::1]:1080" />
-            <div class="text-xs text-gray-400 mt-1">VoWiFi 通过此 Socks5 代理连接运营商，实现跨区域本地 VoWiFi。{{ upstreamProxyIPv6AddressHint }}。保存时会自动探测 Socks5 握手与 UDP Associate。</div>
+            <div class="text-xs text-gray-400 mt-1">用于 VoWiFi 连接运营商，Socks5 需支持 UDP Associate。{{ upstreamProxyIPv6AddressHint }}。</div>
           </div>
 
           <div class="ui-panel-muted p-3 flex items-center justify-between rounded-lg">
             <div>
               <div class="text-sm font-bold text-gray-800 dark:text-gray-100">启用代理</div>
-              <div class="text-xs text-gray-500">禁用后绑定到该代理的国家规则会回退为直连</div>
+              <div class="text-xs text-gray-500">禁用后不会被 VoWiFi 使用</div>
             </div>
             <el-switch v-model="upstreamForm.enabled" />
+          </div>
+
+          <div class="ui-panel-muted p-3 flex items-center justify-between rounded-lg">
+            <div>
+              <div class="text-sm font-bold text-gray-800 dark:text-gray-100">VoWiFi 默认</div>
+              <div class="text-xs text-gray-500">优先使用此代理，国家规则作为兜底</div>
+            </div>
+            <el-switch v-model="upstreamForm.vowifi_default" :disabled="!upstreamForm.enabled" />
           </div>
         </div>
 
@@ -875,7 +919,7 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
           <EmptyState
             v-if="currentProxyCountryRules.length === 0"
             title="暂无国家规则"
-            subtitle="未配置的国家会默认直连"
+            subtitle="没有规则时会使用 VoWiFi 默认代理或直连"
           />
 
           <div v-else class="space-y-2">
@@ -937,7 +981,7 @@ usePollingScheduler(() => fetchUpstream({ silent: true }), 10000, {
 
           <el-alert type="info" :closable="false" show-icon class="!py-2">
             <template #default>
-              <span class="text-xs">规则按 SIM 归属 MCC 解析国家。例如 US 会覆盖 MCC 310/311/312/313/314/315/316 等表内分组；没有配置规则的国家默认直连。需要重启 VoWiFi 生效。</span>
+              <span class="text-xs">VoWiFi 默认代理优先生效；国家规则用于高级分流。需要重启 VoWiFi 生效。</span>
             </template>
           </el-alert>
         </div>

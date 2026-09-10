@@ -444,6 +444,7 @@ export type UpstreamProxy = {
   username: string
   password?: string   // 列表接口返回脱敏值 "****"
   enabled: boolean
+  vowifi_default?: boolean
   created_at?: string
   updated_at?: string
 }

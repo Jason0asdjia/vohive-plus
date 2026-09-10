@@ -105,7 +105,7 @@ func resolveVoWiFiProfileMCCMNC(ctx context.Context, worker *Worker, status mode
 		return strings.TrimSpace(status.NativeMCC), strings.TrimSpace(status.NativeMNC), "sim_home_cache"
 	}
 
-	return vowifiProfileMCCMNC(status)
+	return "", "", ""
 }
 
 func cacheVoWiFiProfileMCCMNC(worker *Worker, mcc, mnc string) {

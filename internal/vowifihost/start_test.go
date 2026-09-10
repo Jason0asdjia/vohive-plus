@@ -34,6 +34,29 @@ func TestManagerBeginAndFailStartOwnsStartupMutationAndBroadcast(t *testing.T) {
 	}
 }
 
+func TestManagerFailStartClassifiesSOCKS5UDPTimeout(t *testing.T) {
+	manager := NewManager()
+	deviceID := "dev-proxy-timeout"
+	claim := manager.BeginStart(deviceID)
+	err := errors.New("SWU tunnel establishment failed: read udp 127.0.0.1:46072->127.0.0.1:50743: i/o timeout")
+
+	manager.FailStart(deviceID, claim.Epoch, runtimehost.State{DeviceID: deviceID}, err)
+
+	state, ok := manager.RuntimeStore().State(deviceID)
+	if !ok {
+		t.Fatal("State() ok=false, want failed startup state")
+	}
+	if state.Phase != runtimehost.PhaseError {
+		t.Fatalf("phase=%q, want error", state.Phase)
+	}
+	if state.LastErrorClass != "proxy" {
+		t.Fatalf("last_error_class=%q, want proxy", state.LastErrorClass)
+	}
+	if state.LastError != err.Error() {
+		t.Fatalf("last_error=%q, want %q", state.LastError, err.Error())
+	}
+}
+
 func TestManagerShouldRunMatchesRuntimeEpoch(t *testing.T) {
 	manager := NewManager()
 	deviceID := "dev-epoch"

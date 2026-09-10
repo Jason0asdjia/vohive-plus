@@ -4,7 +4,7 @@ GOOS ?= linux
 CGO_ENABLED ?= 0
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "unknown")
 VERSION_TAG = $(if $(filter v%,$(VERSION)),$(VERSION),v$(VERSION))
-BUILD_TIME ?= $(shell date "+%Y-%m-%d %H:%M:%S")
+BUILD_TIME ?= $(shell date -u "+%Y-%m-%dT%H:%M:%SZ")
 DIST_DIR ?= dist
 MAIN_PACKAGE ?= ./cmd/vohive
 

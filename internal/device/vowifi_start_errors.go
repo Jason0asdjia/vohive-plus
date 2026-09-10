@@ -28,8 +28,8 @@ func logVoWiFiFailureSummary(traceID, deviceID, stage, errorClass, reason string
 }
 
 func (p *Pool) handleVoWiFiStartupError(traceID, deviceID, runtimeEPDGOverride string, generation uint64, enableStart time.Time, w *Worker, state runtimehost.State, err error) error {
-	defer p.clearVoWiFiStartupStateAndBroadcast(deviceID)
 	if errors.Is(err, apduarbiter.ErrAPDUBusy) {
+		defer p.clearVoWiFiStartupStateAndBroadcast(deviceID)
 		logger.Debug("VoWiFi 启动遇到 APDU busy，等待短退避恢复",
 			"trace_id", traceID,
 			"device", deviceID,
@@ -45,6 +45,9 @@ func (p *Pool) handleVoWiFiStartupError(traceID, deviceID, runtimeEPDGOverride s
 	nextRetry := vowifihost.DesiredRecoverDelay(0)
 	if !retryable {
 		nextRetry = 0
+	}
+	if strings.TrimSpace(state.LastErrorClass) == "" {
+		state.LastErrorClass = classifyVoWiFiStartupError(err)
 	}
 	logVoWiFiFailureSummary(traceID, deviceID, "startup", state.LastErrorClass, err.Error(), retryable, nextRetry)
 	p.restoreNetworkAfterVoWiFiStartupFailure(traceID, deviceID, w)
@@ -89,6 +92,27 @@ func shouldRetryVoWiFiAutoStart(err error) bool {
 		return false
 	}
 	return !carrier.IsVoWiFiPolicyBlockedError(err)
+}
+
+func classifyVoWiFiStartupError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case text == "":
+		return ""
+	case strings.Contains(text, "socks5") || strings.Contains(text, "前置代理") || strings.Contains(text, "udp associate"):
+		return "proxy"
+	case strings.Contains(text, "read udp") && strings.Contains(text, "127.0.0.1") && strings.Contains(text, "i/o timeout"):
+		return "proxy"
+	case strings.Contains(text, "ike") || strings.Contains(text, "swu tunnel") || strings.Contains(text, "tunnel"):
+		return "tunnel"
+	case strings.Contains(text, "aka") || strings.Contains(text, "apdu") || strings.Contains(text, "sim"):
+		return "aka"
+	default:
+		return "unknown"
+	}
 }
 
 func (p *Pool) scheduleVoWiFiAPDUBusyRecover(deviceID, overrideEPDG string, generation uint64) {

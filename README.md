@@ -77,7 +77,7 @@ winget install dorssel.usbipd-win
 ### 下载与启动
 
 1. 打开 [Releases](https://github.com/swordstudiox/vohive-plus/releases)。
-2. 下载 `vohive-plus-desktop_1.0.7_windows_x64.zip`。
+2. 下载 `vohive-plus-desktop_1.0.8_windows_x64.zip`。
 3. 解压到一个普通目录，例如 `D:\Apps\VoHivePlus`。
 4. 双击 `vohive-plus-desktop.exe`。
 5. 插入大疆 4G 模块。
@@ -113,10 +113,10 @@ Web 默认地址为 `http://127.0.0.1:7575/`，默认登录账号为 `admin/admi
 
 ## Release 产物
 
-- `vohive-plus-desktop_1.0.7_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、固定版本的 `iniwex5/vohive` 备份运行体资源、Action 打包时拉取的 VoCat latest Linux amd64 运行体、默认配置和 WSL USB 准备脚本。
-- `vohive-plus-firmware_1.0.7_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
-- `vohive-plus-firmware_1.0.7_linux_arm64`：Linux arm64 后端运行时。
-- `vohive-plus-firmware_1.0.7_linux_armv7`：Linux armv7 后端运行时。
+- `vohive-plus-desktop_1.0.8_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、固定版本的 `iniwex5/vohive` 备份运行体资源、Action 打包时拉取的 VoCat latest Linux amd64 运行体、默认配置和 WSL USB 准备脚本。
+- `vohive-plus-firmware_1.0.8_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
+- `vohive-plus-firmware_1.0.8_linux_arm64`：Linux arm64 后端运行时。
+- `vohive-plus-firmware_1.0.8_linux_armv7`：Linux armv7 后端运行时。
 - `*.sha256`：对应产物的 SHA256 校验文件。
 
 ## 开发者说明
@@ -143,7 +143,7 @@ cp -R web/dist internal/web/dist
 
 GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -buildvcs=false -tags "with_utls nomsgpack" \
-  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.7'" \
+  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.8' -X 'github.com/swordstudiox/vohive-plus/internal/global.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
   -o dist/vohive-open_linux_amd64 ./cmd/vohive
 ```
 
@@ -195,7 +195,7 @@ cargo test
 git push origin main
 ```
 
-GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.7.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
+GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.8.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
 
 后续版本遵循语义化版本规则：
 

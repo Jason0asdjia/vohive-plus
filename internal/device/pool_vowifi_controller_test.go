@@ -240,6 +240,48 @@ func TestHandleVoWiFiStartupErrorRestoresRadioWithoutDataRestoreIntent(t *testin
 	}
 }
 
+func TestHandleVoWiFiStartupErrorKeepsFailedStartupStateVisible(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	deviceID := "dev-startup-state"
+	err := errors.New("SWU tunnel establishment failed: socks5 udp ike read failed: target=epdg.example:4500 proxy=NL(127.0.0.1:10808): i/o timeout")
+	p.recordVoWiFiStartupState(deviceID, runtimehost.State{
+		DeviceID:       deviceID,
+		Phase:          runtimehost.PhaseError,
+		LastErrorClass: "proxy",
+		LastError:      err.Error(),
+		UpdatedAt:      time.Now(),
+	})
+
+	gotErr := p.handleVoWiFiStartupError(
+		"trace-startup-state",
+		deviceID,
+		"",
+		0,
+		time.Now(),
+		&Worker{ID: deviceID},
+		runtimehost.State{DeviceID: deviceID, LastErrorClass: "proxy", LastError: err.Error()},
+		err,
+	)
+	if gotErr == nil {
+		t.Fatal("handleVoWiFiStartupError() error = nil, want startup error")
+	}
+	state, ok := p.GetVoWiFiRuntimeState(deviceID)
+	if !ok {
+		t.Fatal("failed startup state should remain visible")
+	}
+	if state.LastErrorClass != "proxy" || state.LastError == "" {
+		t.Fatalf("failed startup state lost details: %+v", state)
+	}
+}
+
+func TestClassifyVoWiFiStartupErrorTreatsSOCKS5UDPTimeoutAsProxy(t *testing.T) {
+	err := errors.New("SWU tunnel establishment failed: read udp 127.0.0.1:46072->127.0.0.1:50743: i/o timeout")
+	if got := classifyVoWiFiStartupError(err); got != "proxy" {
+		t.Fatalf("classifyVoWiFiStartupError()=%q, want proxy", got)
+	}
+}
+
 func drainLoggerEntries(ch <-chan logger.LogEntry) []logger.LogEntry {
 	entries := make([]logger.LogEntry, 0)
 	for {

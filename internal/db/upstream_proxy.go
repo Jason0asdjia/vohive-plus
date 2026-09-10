@@ -12,14 +12,15 @@ import (
 // UpstreamProxy 前置代理实例（用于代理 VoWiFi 的 ePDG 连接）
 // 通过 Socks5 UDP Associate 将 IKE/ESP 流量转发到 ePDG
 type UpstreamProxy struct {
-	ID        string    `gorm:"primaryKey" json:"id"`
-	Name      string    `json:"name"`
-	Addr      string    `json:"addr"`               // Socks5 服务器地址 (host:port)
-	Username  string    `json:"username"`           // 可选鉴权用户名
-	Password  string    `json:"password,omitempty"` // 可选鉴权密码
-	Enabled   bool      `json:"enabled"`            // 是否启用
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `gorm:"primaryKey" json:"id"`
+	Name          string    `json:"name"`
+	Addr          string    `json:"addr"`               // Socks5 服务器地址 (host:port)
+	Username      string    `json:"username"`           // 可选鉴权用户名
+	Password      string    `json:"password,omitempty"` // 可选鉴权密码
+	Enabled       bool      `json:"enabled"`            // 是否启用
+	VoWiFiDefault bool      `gorm:"column:vowifi_default;index" json:"vowifi_default"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // UpstreamProxyCountryRule 将 SIM home country 路由到指定前置代理。
@@ -70,7 +71,19 @@ func UpsertUpstreamProxy(p UpstreamProxy) error {
 	if strings.TrimSpace(p.Addr) == "" {
 		return errors.New("empty addr")
 	}
-	return DB.Save(&p).Error
+	if !p.Enabled {
+		p.VoWiFiDefault = false
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if p.VoWiFiDefault {
+			if err := tx.Model(&UpstreamProxy{}).
+				Where("id <> ?", p.ID).
+				Update("vowifi_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Save(&p).Error
+	})
 }
 
 // DeleteUpstreamProxy 删除前置代理（同时清理关联的国家规则）
@@ -83,6 +96,21 @@ func DeleteUpstreamProxy(id string) error {
 		return err
 	}
 	return DB.Delete(&UpstreamProxy{}, "id = ?", id).Error
+}
+
+func GetDefaultVoWiFiUpstreamProxy() (*UpstreamProxy, error) {
+	var out UpstreamProxy
+	err := DB.
+		Where("vowifi_default = ? AND enabled = ? AND COALESCE(addr, '') <> ''", true, true).
+		Order("updated_at desc, id asc").
+		First(&out).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ── UpstreamProxyCountryRule 国家规则管理 ──

@@ -26,6 +26,7 @@ const (
 )
 
 type esimSwitchContext struct {
+	FinalizeClaimed      bool
 	VoWiFiActiveBefore   bool
 	FlightModeBefore     bool
 	QMIConnectedBefore   bool
@@ -38,6 +39,17 @@ type esimSwitchContext struct {
 	CapturedAt           time.Time
 	Phase                esim.SwitchPhase
 	PhaseUpdatedAt       time.Time
+}
+
+// postSwitchSession separates the short-lived ownership of a switch finalize
+// from the bounded authority granted to its delayed identity refreshes.
+// It is only read or mutated under Pool.switchMu.
+type postSwitchSession struct {
+	Token              uint64
+	IdentityGeneration uint64
+	FinalizeClaimed    bool
+	RetryLeases        int
+	RetryDeadline      time.Time
 }
 
 var (
@@ -105,6 +117,9 @@ func (p *Pool) beginESIMSwitch(deviceID string, targetICCID string) esimSwitchCo
 	if p.switchTokens == nil {
 		p.switchTokens = make(map[string]uint64)
 	}
+	if p.postSwitchSessions == nil {
+		p.postSwitchSessions = make(map[string]postSwitchSession)
+	}
 	p.switchSeq++
 	snapshot.SwitchToken = p.switchSeq
 	snapshot.Phase = esim.SwitchPhasePrepare
@@ -112,6 +127,7 @@ func (p *Pool) beginESIMSwitch(deviceID string, targetICCID string) esimSwitchCo
 	p.switchingDevices[deviceID] = true
 	p.switchContexts[deviceID] = snapshot
 	p.switchTokens[deviceID] = snapshot.SwitchToken
+	p.postSwitchSessions[deviceID] = postSwitchSession{Token: snapshot.SwitchToken}
 	p.switchMu.Unlock()
 
 	go func(capturedAt time.Time) {
@@ -125,6 +141,7 @@ func (p *Pool) beginESIMSwitch(deviceID string, targetICCID string) esimSwitchCo
 		delete(p.switchContexts, deviceID)
 		delete(p.switchingDevices, deviceID)
 		delete(p.switchTokens, deviceID)
+		delete(p.postSwitchSessions, deviceID)
 		logger.Warn("切卡超时保护触发，已自动清理切卡中标记", "device", deviceID)
 	}(snapshot.CapturedAt)
 
@@ -201,6 +218,10 @@ func (p *Pool) updateESIMSwitchIdentityGeneration(deviceID string, token uint64,
 	}
 	snapshot.IdentityGeneration = generation
 	p.switchContexts[deviceID] = snapshot
+	if session, ok := p.postSwitchSessions[deviceID]; ok && session.Token == currentToken {
+		session.IdentityGeneration = generation
+		p.postSwitchSessions[deviceID] = session
+	}
 }
 
 func (p *Pool) isLatestSwitchToken(deviceID string, token uint64) bool {
@@ -222,6 +243,7 @@ func (p *Pool) clearESIMSwitch(deviceID string) {
 	delete(p.switchContexts, deviceID)
 	delete(p.switchingDevices, deviceID)
 	delete(p.switchTokens, deviceID)
+	delete(p.postSwitchSessions, deviceID)
 	p.switchMu.Unlock()
 }
 
@@ -237,6 +259,7 @@ func (p *Pool) clearESIMSwitchIfToken(deviceID string, token uint64) {
 	delete(p.switchContexts, deviceID)
 	delete(p.switchingDevices, deviceID)
 	delete(p.switchTokens, deviceID)
+	delete(p.postSwitchSessions, deviceID)
 }
 
 func (p *Pool) applyNetworkPreferenceForSwitchSnapshot(worker *Worker, snapshot esimSwitchContext) error {
@@ -365,6 +388,10 @@ func (p *Pool) handleESIMSwitchBefore(deviceID string, targetICCID string) uint6
 }
 
 func (p *Pool) refreshPostSwitchIdentity(deviceID string, worker *Worker, snapshot esimSwitchContext) (bool, error) {
+	return p.refreshPostSwitchIdentityForToken(deviceID, 0, worker, snapshot)
+}
+
+func (p *Pool) refreshPostSwitchIdentityForToken(deviceID string, token uint64, worker *Worker, snapshot esimSwitchContext) (bool, error) {
 	pollTimeout := postSwitchIdentityPollTimeout
 	if pollTimeout <= 0 {
 		pollTimeout = 10 * time.Second
@@ -373,16 +400,37 @@ func (p *Pool) refreshPostSwitchIdentity(deviceID string, worker *Worker, snapsh
 	if pollInterval <= 0 {
 		pollInterval = 500 * time.Millisecond
 	}
-	return p.refreshPostSwitchIdentityWithPolling(deviceID, worker, snapshot, pollTimeout, pollInterval)
+	return p.refreshPostSwitchIdentityWithPollingForToken(deviceID, token, worker, snapshot, pollTimeout, pollInterval)
 }
 
 func (p *Pool) refreshPostSwitchIdentityWithPolling(deviceID string, worker *Worker, snapshot esimSwitchContext, pollTimeout time.Duration, pollInterval time.Duration) (bool, error) {
+	return p.refreshPostSwitchIdentityWithPollingForToken(deviceID, 0, worker, snapshot, pollTimeout, pollInterval)
+}
+
+func (p *Pool) refreshPostSwitchIdentityWithPollingForToken(deviceID string, token uint64, worker *Worker, snapshot esimSwitchContext, pollTimeout time.Duration, pollInterval time.Duration) (bool, error) {
 	oldICCID := normalizeSIMIdentity(snapshot.ICCIDBefore)
 	oldIMSI := normalizeSIMIdentity(snapshot.IMSIBefore)
 	targetICCID := normalizeSIMIdentity(snapshot.TargetICCID)
 	targetICCIDKey := normalizeSIMIdentityForCompare(targetICCID)
 	oldICCIDKey := normalizeSIMIdentityForCompare(oldICCID)
-	worker.EnsureSIMIdentityTransition(targetICCID, "post_switch_finalize")
+	if token != 0 && !p.postSwitchSessionStillCurrent(deviceID, token, snapshot.IdentityGeneration, "identity_refresh_prepare") {
+		return false, fmt.Errorf("post_switch_token_stale")
+	}
+	// 必须在 EnsureSIMIdentityTransition 之前拒绝旧 generation；否则旧请求在
+	// 被识别为过期前，可能将后续切卡请求的目标身份改回自身的目标。
+	if snapshot.IdentityGeneration != 0 && !postSwitchIdentityGenerationStillCurrent(worker, snapshot.IdentityGeneration) {
+		err := fmt.Errorf("post_switch_identity_generation_stale")
+		logger.Warn("切卡后身份刷新 generation 已过期，跳过身份转换",
+			"device", deviceID,
+			"reason", "post_switch_finalize",
+			"target_iccid", targetICCID,
+			"identity_generation", snapshot.IdentityGeneration,
+			"err", err)
+		return false, err
+	}
+	if snapshot.IdentityGeneration == 0 {
+		worker.EnsureSIMIdentityTransition(targetICCID, "post_switch_finalize")
+	}
 
 	reader, ok := worker.Backend.(liveSIMIdentityReader)
 	if !ok {
@@ -425,16 +473,16 @@ func (p *Pool) refreshPostSwitchIdentityWithPolling(deviceID string, worker *Wor
 		imsiErr = liveIMSIErr
 
 		newICCIDKey := normalizeSIMIdentityForCompare(newICCID)
-		if targetICCIDKey != "" && newICCIDKey == targetICCIDKey {
+		if targetICCIDKey != "" && iccidErr == nil && newICCIDKey == targetICCIDKey {
 			// ICCID 已生效，但 IMSI 可能仍在 USIM 重初始化窗口（0x0030/0x0025）中。
-			// 为避免把空 IMSI 持久化，等到 IMSI 也成功读出（非空或无错误）再退出。
+			// 为避免把空 IMSI 持久化，等到 IMSI 非空且成功读出后再退出。
 			if newIMSI != "" && imsiErr == nil {
 				break
 			}
 			// IMSI 尚未就绪，继续轮询直到超时兜底。
 		}
 		// 如果没有目标 ICCID（例如非 enable 操作），沿用旧语义：无快照或读到不同 ICCID 即认为身份可用。
-		if targetICCIDKey == "" && (oldICCIDKey == "" || (newICCIDKey != "" && newICCIDKey != oldICCIDKey)) {
+		if targetICCIDKey == "" && iccidErr == nil && (oldICCIDKey == "" || (newICCIDKey != "" && newICCIDKey != oldICCIDKey)) {
 			break
 		}
 		if time.Now().After(pollDeadline) {
@@ -450,7 +498,7 @@ func (p *Pool) refreshPostSwitchIdentityWithPolling(deviceID string, worker *Wor
 	}
 
 	newICCIDKey := normalizeSIMIdentityForCompare(newICCID)
-	if targetICCIDKey != "" && newICCIDKey != targetICCIDKey {
+	if targetICCIDKey != "" && (iccidErr != nil || newICCIDKey != targetICCIDKey) {
 		err := fmt.Errorf("post_switch_target_iccid_not_active")
 		worker.MarkSIMIdentityDegraded("post_switch_finalize", err)
 		logger.Warn("切卡后目标 ICCID 未生效，保留清空后的身份并跳过旧身份覆盖",
@@ -464,6 +512,34 @@ func (p *Pool) refreshPostSwitchIdentityWithPolling(deviceID string, worker *Wor
 			"identity_ready", false,
 			"iccid_changed", oldICCIDKey != "" && newICCIDKey != "" && oldICCIDKey != newICCIDKey,
 			"imsi_changed", oldIMSI != "" && newIMSI != "" && oldIMSI != newIMSI,
+			"err", err)
+		return false, err
+	}
+	if token != 0 && !p.postSwitchSessionStillCurrent(deviceID, token, snapshot.IdentityGeneration, "identity_refresh_commit") {
+		return false, fmt.Errorf("post_switch_token_stale")
+	}
+	if targetICCIDKey != "" && (newIMSI == "" || imsiErr != nil) {
+		err := fmt.Errorf("post_switch_target_imsi_not_ready")
+		worker.MarkSIMIdentityDegraded("post_switch_finalize", err)
+		logger.Warn("切卡后目标 ICCID 已生效但 IMSI 未就绪，保留未确认身份",
+			"device", deviceID,
+			"reason", "post_switch_finalize",
+			"target_iccid", targetICCID,
+			"new_iccid", newICCID,
+			"new_imsi", newIMSI,
+			"imsi_err", imsiErr,
+			"err", err)
+		return false, err
+	}
+	if snapshot.IdentityGeneration != 0 && !postSwitchIdentityGenerationStillCurrent(worker, snapshot.IdentityGeneration) {
+		err := fmt.Errorf("post_switch_identity_generation_stale")
+		logger.Warn("切卡后身份刷新已过期，跳过迟到身份写入",
+			"device", deviceID,
+			"reason", "post_switch_finalize",
+			"target_iccid", targetICCID,
+			"new_iccid", newICCID,
+			"new_imsi", newIMSI,
+			"identity_generation", snapshot.IdentityGeneration,
 			"err", err)
 		return false, err
 	}
@@ -625,6 +701,145 @@ func (p *Pool) resolvePostSwitchSnapshotIfToken(deviceID string, token uint64) (
 	return snapshot, true
 }
 
+func (p *Pool) claimPostSwitchFinalize(deviceID string, token uint64) (esimSwitchContext, bool) {
+	if token == 0 {
+		return p.resolvePostSwitchSnapshotIfToken(deviceID, token)
+	}
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	snapshot, ok := p.switchContexts[deviceID]
+	session, sessionOK := p.postSwitchSessions[deviceID]
+	if !ok || !sessionOK || p.switchTokens[deviceID] != token || session.Token != token || session.FinalizeClaimed {
+		return esimSwitchContext{}, false
+	}
+	session.FinalizeClaimed = true
+	p.postSwitchSessions[deviceID] = session
+	snapshot.FinalizeClaimed = true
+	p.switchContexts[deviceID] = snapshot
+	return snapshot, true
+}
+
+// releasePostSwitchFinalize releases only the finalize claim. Delayed retries
+// keep their token session until every lease is released or a newer token takes
+// its place; the switching flag itself is no longer held after finalize.
+func (p *Pool) releasePostSwitchFinalize(deviceID string, token uint64) {
+	if token == 0 {
+		p.clearESIMSwitch(deviceID)
+		return
+	}
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	session, ok := p.postSwitchSessions[deviceID]
+	if !ok || p.switchTokens[deviceID] != token || session.Token != token {
+		return
+	}
+	session.FinalizeClaimed = false
+	if session.RetryLeases > 0 {
+		p.postSwitchSessions[deviceID] = session
+		delete(p.switchingDevices, deviceID)
+		return
+	}
+	p.clearPostSwitchSessionLocked(deviceID, token)
+}
+
+func (p *Pool) clearPostSwitchSessionLocked(deviceID string, token uint64) {
+	session, ok := p.postSwitchSessions[deviceID]
+	if !ok || p.switchTokens[deviceID] != token || session.Token != token {
+		return
+	}
+	delete(p.switchContexts, deviceID)
+	delete(p.switchingDevices, deviceID)
+	delete(p.switchTokens, deviceID)
+	delete(p.postSwitchSessions, deviceID)
+}
+
+func (p *Pool) claimPostSwitchRetryLease(deviceID string, snapshot esimSwitchContext, deadline time.Time) bool {
+	if snapshot.SwitchToken == 0 {
+		return false
+	}
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	session, ok := p.postSwitchSessions[deviceID]
+	if !ok || p.switchTokens[deviceID] != snapshot.SwitchToken || session.Token != snapshot.SwitchToken ||
+		(snapshot.IdentityGeneration != 0 && session.IdentityGeneration != snapshot.IdentityGeneration) {
+		return false
+	}
+	if !session.RetryDeadline.IsZero() && !time.Now().Before(session.RetryDeadline) {
+		return false
+	}
+	if session.RetryDeadline.IsZero() || deadline.After(session.RetryDeadline) {
+		session.RetryDeadline = deadline
+	}
+	session.RetryLeases++
+	p.postSwitchSessions[deviceID] = session
+	return true
+}
+
+func (p *Pool) releasePostSwitchRetryLease(deviceID string, token uint64) {
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	session, ok := p.postSwitchSessions[deviceID]
+	if !ok || p.switchTokens[deviceID] != token || session.Token != token {
+		return
+	}
+	if session.RetryLeases > 0 {
+		session.RetryLeases--
+	}
+	if !session.FinalizeClaimed && session.RetryLeases == 0 {
+		p.clearPostSwitchSessionLocked(deviceID, token)
+		return
+	}
+	p.postSwitchSessions[deviceID] = session
+}
+
+func (p *Pool) postSwitchSessionStillCurrent(deviceID string, token, generation uint64, stage string) bool {
+	if token == 0 {
+		return true
+	}
+	p.switchMu.Lock()
+	session, ok := p.postSwitchSessions[deviceID]
+	currentToken := p.switchTokens[deviceID]
+	valid := ok && currentToken == token && session.Token == token &&
+		(generation == 0 || session.IdentityGeneration == generation) &&
+		(session.RetryDeadline.IsZero() || time.Now().Before(session.RetryDeadline))
+	p.switchMu.Unlock()
+	if valid {
+		return true
+	}
+	logger.Debug("停止过期 eSIM 切卡后身份重试",
+		"device", deviceID,
+		"stage", strings.TrimSpace(stage),
+		"switch_token", token,
+		"current_switch_token", currentToken,
+		"identity_generation", generation)
+	return false
+}
+
+// authorizePostSwitchIdentityTransition binds the switch token check and the
+// identity transition under the same short switch lock. A newer switch cannot
+// replace the context between validation and EnsureSIMIdentityTransition.
+func (p *Pool) authorizePostSwitchIdentityTransition(deviceID string, token uint64, worker *Worker, snapshot esimSwitchContext) (uint64, bool) {
+	if worker == nil {
+		return 0, false
+	}
+	if token == 0 {
+		return worker.EnsureSIMIdentityTransition(snapshot.TargetICCID, "post_switch_finalize"), true
+	}
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	current, ok := p.switchContexts[deviceID]
+	session, sessionOK := p.postSwitchSessions[deviceID]
+	if !ok || !sessionOK || p.switchTokens[deviceID] != token || session.Token != token || !session.FinalizeClaimed {
+		return 0, false
+	}
+	generation := worker.EnsureSIMIdentityTransition(snapshot.TargetICCID, "post_switch_finalize")
+	current.IdentityGeneration = generation
+	p.switchContexts[deviceID] = current
+	session.IdentityGeneration = generation
+	p.postSwitchSessions[deviceID] = session
+	return generation, true
+}
+
 func (p *Pool) switchTokenStillCurrent(deviceID string, token uint64, stage string) bool {
 	if token == 0 {
 		return true
@@ -653,6 +868,9 @@ func (p *Pool) refreshPostSwitchRuntime(deviceID string, worker *Worker) int64 {
 }
 
 func (p *Pool) schedulePostSwitchIdentityRefreshes(deviceID string, snapshot esimSwitchContext) {
+	if snapshot.SwitchToken == 0 {
+		return
+	}
 	delays := append([]time.Duration(nil), postSwitchIdentityRetryDelays...)
 	pollTimeout := postSwitchIdentityPollTimeout
 	if pollTimeout <= 0 {
@@ -662,11 +880,26 @@ func (p *Pool) schedulePostSwitchIdentityRefreshes(deviceID string, snapshot esi
 	if pollInterval <= 0 {
 		pollInterval = 500 * time.Millisecond
 	}
+	if len(delays) == 0 {
+		return
+	}
+	lastDelay := delays[0]
+	for _, delay := range delays[1:] {
+		if delay > lastDelay {
+			lastDelay = delay
+		}
+	}
+	cleanupAfter := lastDelay + pollTimeout + 5*time.Second
+	deadline := time.Now().Add(cleanupAfter)
 	for _, delay := range delays {
 		delay := delay
 		pollTimeout := pollTimeout
 		pollInterval := pollInterval
+		if !p.claimPostSwitchRetryLease(deviceID, snapshot, deadline) {
+			return
+		}
 		go func() {
+			defer p.releasePostSwitchRetryLease(deviceID, snapshot.SwitchToken)
 			timer := time.NewTimer(delay)
 			defer timer.Stop()
 			select {
@@ -674,20 +907,60 @@ func (p *Pool) schedulePostSwitchIdentityRefreshes(deviceID string, snapshot esi
 				return
 			case <-timer.C:
 			}
-			worker := p.GetWorker(deviceID)
-			if worker == nil || worker.Backend == nil || !worker.SIMIdentityConvergenceMatches(snapshot.TargetICCID, snapshot.IdentityGeneration) {
+			if !p.postSwitchSessionStillCurrent(deviceID, snapshot.SwitchToken, snapshot.IdentityGeneration, "identity_retry_start") {
 				return
 			}
-			_, err := p.refreshPostSwitchIdentityWithPolling(deviceID, worker, snapshot, pollTimeout, pollInterval)
+			worker := p.GetWorker(deviceID)
+			if worker == nil || worker.Backend == nil || !postSwitchIdentityGenerationStillCurrent(worker, snapshot.IdentityGeneration) {
+				return
+			}
+			_, err := p.refreshPostSwitchIdentityWithPollingForToken(deviceID, snapshot.SwitchToken, worker, snapshot, pollTimeout, pollInterval)
 			if err != nil {
 				logger.Debug("切卡后补刷新 SIM 身份失败", "device", deviceID, "delay", delay.String(), "err", err)
 				return
 			}
-			p.PersistIdentityState(worker)
+			if !p.postSwitchSessionStillCurrent(deviceID, snapshot.SwitchToken, snapshot.IdentityGeneration, "identity_retry_policy") || !postSwitchIdentityGenerationStillCurrent(worker, snapshot.IdentityGeneration) {
+				return
+			}
+			policyResult := p.resolveAndApplyPolicy(worker, "post_switch_identity_retry")
 			p.broadcastVoWiFiStateChange(deviceID)
-			logger.Debug("切卡后补刷新 SIM 身份完成", "device", deviceID, "delay", delay.String())
+			logger.Debug("切卡后补刷新 SIM 身份完成",
+				"device", deviceID,
+				"delay", delay.String(),
+				"policy_applied", policyResult.Applied,
+				"policy_iccid", policyResult.ICCID,
+				"policy_reason", policyResult.Reason)
 		}()
 	}
+	go func() {
+		timer := time.NewTimer(cleanupAfter)
+		defer timer.Stop()
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-timer.C:
+			p.expirePostSwitchSession(deviceID, snapshot.SwitchToken, deadline)
+		}
+	}()
+}
+
+func (p *Pool) expirePostSwitchSession(deviceID string, token uint64, deadline time.Time) {
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+	session, ok := p.postSwitchSessions[deviceID]
+	if !ok || p.switchTokens[deviceID] != token || session.Token != token || !session.RetryDeadline.Equal(deadline) || time.Now().Before(deadline) {
+		return
+	}
+	p.clearPostSwitchSessionLocked(deviceID, token)
+}
+
+func postSwitchIdentityGenerationStillCurrent(worker *Worker, generation uint64) bool {
+	if worker == nil || generation == 0 {
+		return worker != nil
+	}
+	worker.cacheMu.RLock()
+	defer worker.cacheMu.RUnlock()
+	return worker.state.Identity.Generation == generation
 }
 
 type postSwitchSIMAuthProbeResult struct {
@@ -999,21 +1272,21 @@ func (p *Pool) finishESIMSwitchForFailure(deviceID string, token uint64) (esimSw
 	delete(p.switchContexts, deviceID)
 	delete(p.switchingDevices, deviceID)
 	delete(p.switchTokens, deviceID)
+	delete(p.postSwitchSessions, deviceID)
 	return snapshot, true
 }
 
 func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 	finalizeStart := time.Now()
-	snapshot, ok := p.resolvePostSwitchSnapshotIfToken(deviceID, token)
+	snapshot, ok := p.claimPostSwitchFinalize(deviceID, token)
 	if !ok {
 		return
 	}
+	if p.postSwitchFinalizeClaimHook != nil {
+		p.postSwitchFinalizeClaimHook()
+	}
 	defer func() {
-		if snapshot.SwitchToken != 0 {
-			p.clearESIMSwitchIfToken(deviceID, snapshot.SwitchToken)
-			return
-		}
-		p.clearESIMSwitch(deviceID)
+		p.releasePostSwitchFinalize(deviceID, snapshot.SwitchToken)
 	}()
 	finalizeOK := false
 	defer func() {
@@ -1028,8 +1301,11 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 		logger.Warn("切卡后恢复失败：设备不存在", "device", deviceID)
 		return
 	}
-	snapshot.IdentityGeneration = worker.EnsureSIMIdentityTransition(snapshot.TargetICCID, "post_switch_finalize")
-	p.updateESIMSwitchIdentityGeneration(deviceID, snapshot.SwitchToken, snapshot.IdentityGeneration)
+	generation, authorized := p.authorizePostSwitchIdentityTransition(deviceID, token, worker, snapshot)
+	if !authorized {
+		return
+	}
+	snapshot.IdentityGeneration = generation
 	p.broadcastVoWiFiStateChange(deviceID)
 
 	coreWaitStart := time.Now()
@@ -1057,16 +1333,19 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 	}
 
 	convergence := p.runPostSwitchConvergence(deviceID, token, worker, snapshot)
+	if !p.switchTokenStillCurrent(deviceID, token, "identity_convergence") || (p.ctx != nil && p.ctx.Err() != nil) {
+		return
+	}
 	if convergence.Degraded {
 		p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseDegraded)
-		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, fmt.Errorf("%s", convergence.Reason), false, false)
+		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 		return
 	}
 
 	p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseIdentityRefresh)
 	identityRefreshStart := time.Now()
-	identityReady, identityRefreshErr := p.refreshPostSwitchIdentity(deviceID, worker, snapshot)
+	identityReady, identityRefreshErr := p.refreshPostSwitchIdentityForToken(deviceID, token, worker, snapshot)
 	identityRefreshMS := time.Since(identityRefreshStart).Milliseconds()
 	if !p.switchTokenStillCurrent(deviceID, token, "identity_refresh") {
 		return
@@ -1087,12 +1366,17 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 
 	if identityRefreshErr != nil {
 		p.markESIMSwitchPhaseIfToken(deviceID, token, esim.SwitchPhaseDegraded)
-		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 		p.restorePostSwitchConnectivity(deviceID, worker, snapshot, identityRefreshErr, false, false)
+		p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
+		return
+	}
+	if p.postSwitchPolicyProjectionHook != nil {
+		p.postSwitchPolicyProjectionHook()
+	}
+	if !p.switchTokenStillCurrent(deviceID, token, "policy_projection") || !postSwitchIdentityGenerationStillCurrent(worker, snapshot.IdentityGeneration) {
 		return
 	}
 	policyResult := p.resolveAndApplyPolicy(worker, "esim_switched")
-	p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 	var restoreGateErr error
 	if worker.Config.VoWiFiEnabled {
 		simAuthReadyStart := time.Now()
@@ -1116,5 +1400,6 @@ func (p *Pool) handleESIMSwitchAfter(deviceID string, token uint64) {
 	if worker.EsimMgr != nil {
 		worker.EsimMgr.WarmOverviewAsync("post_switch_finalize")
 	}
+	p.schedulePostSwitchIdentityRefreshes(deviceID, snapshot)
 	finalizeOK = true
 }
