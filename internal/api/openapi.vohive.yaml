@@ -3128,6 +3128,8 @@ components:
           type: string
         enabled:
           type: boolean
+        vowifi_default:
+          type: boolean
         created_at:
           type: string
           format: date-time

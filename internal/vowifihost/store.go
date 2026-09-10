@@ -120,11 +120,47 @@ func (s *Store) FailStart(deviceID string, epoch uint64, state runtimehost.State
 	if state.UpdatedAt.IsZero() {
 		state.UpdatedAt = time.Now()
 	}
+	if state.DeviceID == "" {
+		state.DeviceID = deviceID
+	}
+	if state.Phase == "" {
+		state.Phase = runtimehost.PhaseError
+	}
+	if err != nil {
+		errText := err.Error()
+		if strings.TrimSpace(state.LastError) == "" {
+			state.LastError = errText
+		}
+		if strings.TrimSpace(state.LastReason) == "" {
+			state.LastReason = errText
+		}
+		if strings.TrimSpace(state.LastErrorClass) == "" {
+			state.LastErrorClass = classifyRuntimeStartError(errText)
+		}
+	}
 	slot.state = state
 	if err != nil {
 		slot.lastErr = err.Error()
 	}
 	slot.updatedAt = time.Now()
+}
+
+func classifyRuntimeStartError(errText string) string {
+	errText = strings.ToLower(strings.TrimSpace(errText))
+	switch {
+	case errText == "":
+		return ""
+	case strings.Contains(errText, "socks5") || strings.Contains(errText, "前置代理") || strings.Contains(errText, "udp associate"):
+		return "proxy"
+	case strings.Contains(errText, "read udp") && strings.Contains(errText, "127.0.0.1") && strings.Contains(errText, "i/o timeout"):
+		return "proxy"
+	case strings.Contains(errText, "ike") || strings.Contains(errText, "swu tunnel") || strings.Contains(errText, "tunnel"):
+		return "tunnel"
+	case strings.Contains(errText, "aka") || strings.Contains(errText, "apdu") || strings.Contains(errText, "sim"):
+		return "aka"
+	default:
+		return "unknown"
+	}
 }
 
 func (s *Store) RecordStartupState(deviceID string, state runtimehost.State) bool {

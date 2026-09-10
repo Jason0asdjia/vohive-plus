@@ -127,6 +127,13 @@ func TestProbeSOCKS5UsesIPv6UDPAssociateForIPv6Proxy(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeRelayIPRewritesLoopbackForRemoteProxy(t *testing.T) {
+	got := normalizeProbeRelayIP(net.ParseIP("127.0.0.1"), &net.TCPAddr{IP: net.ParseIP("192.0.2.20"), Port: 7891})
+	if got.String() != "192.0.2.20" {
+		t.Fatalf("normalizeProbeRelayIP()=%s, want 192.0.2.20", got)
+	}
+}
+
 func startProbeServer(t *testing.T, handler func(net.Conn)) string {
 	return startProbeServerOn(t, "tcp", "127.0.0.1:0", handler)
 }

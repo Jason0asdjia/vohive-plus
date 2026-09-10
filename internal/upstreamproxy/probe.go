@@ -297,7 +297,22 @@ func probeUDPAssociate(conn net.Conn) (*net.UDPAddr, error) {
 		return nil, fmt.Errorf("socks5 UDP ASSOCIATE 响应解析失败: 读取端口失败: %w", err)
 	}
 	port := binary.BigEndian.Uint16(portBuf)
+	ip = normalizeProbeRelayIP(ip, conn.RemoteAddr())
 	return &net.UDPAddr{IP: ip, Port: int(port)}, nil
+}
+
+func normalizeProbeRelayIP(relayIP net.IP, remote net.Addr) net.IP {
+	if relayIP == nil || remote == nil {
+		return relayIP
+	}
+	if !relayIP.IsUnspecified() && !relayIP.IsLoopback() {
+		return relayIP
+	}
+	tcpRemote, ok := remote.(*net.TCPAddr)
+	if !ok || tcpRemote.IP == nil || tcpRemote.IP.IsLoopback() {
+		return relayIP
+	}
+	return tcpRemote.IP
 }
 
 func probeUDPAssociateClientIP(conn net.Conn) net.IP {

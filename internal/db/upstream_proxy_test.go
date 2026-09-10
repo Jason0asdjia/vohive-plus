@@ -84,3 +84,58 @@ func TestUpstreamProxyCountryRuleDirectWhenUnknownMCCOrMissingProxy(t *testing.T
 		t.Fatalf("missing proxy proxy=%+v country=%q err=%v, want nil/US/nil", proxy, country, err)
 	}
 }
+
+func TestDefaultVoWiFiUpstreamProxySelectsEnabledProxy(t *testing.T) {
+	openTestDB(t)
+	if err := UpsertUpstreamProxy(UpstreamProxy{ID: "proxy-uk", Addr: "127.0.0.1:1080", Enabled: true, VoWiFiDefault: true}); err != nil {
+		t.Fatalf("UpsertUpstreamProxy() error=%v", err)
+	}
+
+	proxy, err := GetDefaultVoWiFiUpstreamProxy()
+	if err != nil {
+		t.Fatalf("GetDefaultVoWiFiUpstreamProxy() error=%v", err)
+	}
+	if proxy == nil || proxy.ID != "proxy-uk" || proxy.Addr != "127.0.0.1:1080" {
+		t.Fatalf("default proxy=%+v, want proxy-uk", proxy)
+	}
+}
+
+func TestDefaultVoWiFiUpstreamProxyClearsOtherDefaults(t *testing.T) {
+	openTestDB(t)
+	if err := UpsertUpstreamProxy(UpstreamProxy{ID: "proxy-uk", Addr: "127.0.0.1:1080", Enabled: true, VoWiFiDefault: true}); err != nil {
+		t.Fatalf("UpsertUpstreamProxy(proxy-uk) error=%v", err)
+	}
+	if err := UpsertUpstreamProxy(UpstreamProxy{ID: "proxy-nl", Addr: "127.0.0.1:2080", Enabled: true, VoWiFiDefault: true}); err != nil {
+		t.Fatalf("UpsertUpstreamProxy(proxy-nl) error=%v", err)
+	}
+
+	proxy, err := GetDefaultVoWiFiUpstreamProxy()
+	if err != nil {
+		t.Fatalf("GetDefaultVoWiFiUpstreamProxy() error=%v", err)
+	}
+	if proxy == nil || proxy.ID != "proxy-nl" {
+		t.Fatalf("default proxy=%+v, want proxy-nl", proxy)
+	}
+	oldProxy, err := GetUpstreamProxyByID("proxy-uk")
+	if err != nil {
+		t.Fatalf("GetUpstreamProxyByID(proxy-uk) error=%v", err)
+	}
+	if oldProxy == nil || oldProxy.VoWiFiDefault {
+		t.Fatalf("old proxy=%+v, want VoWiFiDefault=false", oldProxy)
+	}
+}
+
+func TestDefaultVoWiFiUpstreamProxyIgnoresDisabledProxy(t *testing.T) {
+	openTestDB(t)
+	if err := UpsertUpstreamProxy(UpstreamProxy{ID: "proxy-uk", Addr: "127.0.0.1:1080", Enabled: false, VoWiFiDefault: true}); err != nil {
+		t.Fatalf("UpsertUpstreamProxy() error=%v", err)
+	}
+
+	proxy, err := GetDefaultVoWiFiUpstreamProxy()
+	if err != nil {
+		t.Fatalf("GetDefaultVoWiFiUpstreamProxy() error=%v", err)
+	}
+	if proxy != nil {
+		t.Fatalf("default proxy=%+v, want nil for disabled default", proxy)
+	}
+}

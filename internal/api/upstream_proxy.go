@@ -22,7 +22,7 @@ func normalizeUpstreamProxyPayload(existing *db.UpstreamProxy, req db.UpstreamPr
 
 	if existing != nil {
 		out.CreatedAt = existing.CreatedAt
-		if out.Password == "" {
+		if out.Password == "" || out.Password == maskSecret(existing.Password) {
 			out.Password = existing.Password
 		}
 	}

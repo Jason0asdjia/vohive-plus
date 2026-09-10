@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type workerStatusBackendStub struct {
 	simInserted              bool
 	nativeMCC                string
 	nativeMNC                string
+	nativeMCCMNCErr          error
 	simMetadata              *backend.SIMMetadata
 	opMode                   backend.OperatingMode
 	opModeErr                error
@@ -55,7 +57,7 @@ func (s *workerStatusBackendStub) IsSimInserted(ctx context.Context) (bool, erro
 	return s.simInserted, nil
 }
 func (s *workerStatusBackendStub) GetNativeMCCMNC(ctx context.Context) (string, string, error) {
-	return s.nativeMCC, s.nativeMNC, nil
+	return s.nativeMCC, s.nativeMNC, s.nativeMCCMNCErr
 }
 
 func (s *workerStatusBackendStub) GetNativeSPN(ctx context.Context) (string, error) {
@@ -810,6 +812,48 @@ func TestBuildVoWiFiStartProfileUsesLiveHomeMCCMNCInsteadOfStaleCache(t *testing
 	}
 }
 
+func TestBuildVoWiFiStartProfileDerivesLebaraEPDGFromLiveHomePLMN(t *testing.T) {
+	p := NewPool(&config.Config{})
+	b := &vowifiLiveIdentityBackendStub{
+		workerSMSCBackendStub: workerSMSCBackendStub{
+			workerStatusBackendStub: workerStatusBackendStub{
+				mode:      backend.BackendQMI,
+				nativeMCC: "204",
+				nativeMNC: "04",
+			},
+			seq: []smscResult{{value: "+316540881000"}},
+		},
+		liveIMSI: "204041234567890",
+	}
+	w := &Worker{ID: "dev-lebara", Backend: b}
+	w.cacheMu.Lock()
+	w.state.Identity.IMSI = "234151234567890"
+	w.state.Identity.NativeMCC = "234"
+	w.state.Identity.NativeMNC = "15"
+	w.state.Identity.IMEI = "861234567890123"
+	w.cacheMu.Unlock()
+
+	profile, err := p.buildVoWiFiStartProfile(w, "trace-lebara-live-plmn")
+	if err != nil {
+		t.Fatalf("buildVoWiFiStartProfile() error=%v", err)
+	}
+	if profile.MCC != "204" || profile.MNC != "04" {
+		t.Fatalf("profile MCC/MNC=%s/%s, want live 204/04", profile.MCC, profile.MNC)
+	}
+
+	prepared, err := identity.PrepareStart(identity.PrepareStartInput{Profile: profile})
+	if err != nil {
+		t.Fatalf("identity.PrepareStart() error=%v", err)
+	}
+	const wantEPDG = "epdg.epc.mnc004.mcc204.pub.3gppnetwork.org"
+	if prepared.EPDGAddr != wantEPDG {
+		t.Fatalf("prepared EPDG=%q, want %q", prepared.EPDGAddr, wantEPDG)
+	}
+	if got := net.JoinHostPort(prepared.EPDGAddr, "4500"); got != wantEPDG+":4500" {
+		t.Fatalf("IKE target=%q, want %q", got, wantEPDG+":4500")
+	}
+}
+
 func TestBuildVoWiFiStartProfileRequiresCachedHomeMCCMNC(t *testing.T) {
 	p := NewPool(&config.Config{})
 	b := &vowifiLiveIdentityBackendStub{
@@ -829,6 +873,50 @@ func TestBuildVoWiFiStartProfileRequiresCachedHomeMCCMNC(t *testing.T) {
 
 	if _, err := p.buildVoWiFiStartProfile(w, "trace-missing-home-plmn"); err == nil {
 		t.Fatal("buildVoWiFiStartProfile() err=nil, want missing home MCC/MNC error")
+	}
+}
+
+func TestBuildVoWiFiStartProfileOnlyUsesHomeCacheForSameIMSI(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cachedIMSI string
+		wantError  bool
+	}{
+		{name: "previous SIM", cachedIMSI: "234151234567890", wantError: true},
+		{name: "unconfirmed SIM", cachedIMSI: "", wantError: true},
+		{name: "same SIM", cachedIMSI: "204041234567890"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewPool(&config.Config{})
+			b := &vowifiLiveIdentityBackendStub{
+				workerSMSCBackendStub: workerSMSCBackendStub{
+					workerStatusBackendStub: workerStatusBackendStub{
+						mode:            backend.BackendQMI,
+						nativeMCCMNCErr: fmt.Errorf("SIM home identity unavailable"),
+					},
+					seq: []smscResult{{value: "+316540881000"}},
+				},
+				liveIMSI: "204041234567890",
+			}
+			w := &Worker{ID: "dev1", Backend: b}
+			w.state.Identity.IMSI = tc.cachedIMSI
+			w.state.Identity.NativeMCC = "204"
+			w.state.Identity.NativeMNC = "04"
+			if tc.wantError {
+				w.state.Identity.NativeMCC = "234"
+				w.state.Identity.NativeMNC = "15"
+			}
+			profile, err := p.buildVoWiFiStartProfile(w, "trace-home-cache")
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "缺少 SIM 归属 MCC/MNC") {
+					t.Fatalf("profile=%+v err=%v, want unconfirmed home PLMN error", profile, err)
+				}
+				return
+			}
+			if err != nil || profile.MCC != "204" || profile.MNC != "04" {
+				t.Fatalf("profile=%+v err=%v, want same-SIM cached 204/04", profile, err)
+			}
+		})
 	}
 }
 

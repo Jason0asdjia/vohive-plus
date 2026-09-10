@@ -26,11 +26,18 @@ import (
 )
 
 type esimSwitchRestoreBackendStub struct {
+	liveIdentityMu      sync.Mutex
 	mode                string
 	getMode             backend.OperatingMode
 	setCalls            []backend.OperatingMode
 	liveICCID           string
 	liveIMSI            string
+	liveICCIDSeq        []string
+	liveIMSISeq         []string
+	liveICCIDCalls      int
+	liveIMSICalls       int
+	liveICCIDSecondRead chan struct{}
+	liveICCIDSecondOnce sync.Once
 	liveSPN             string
 	liveSPNErr          error
 	uimReadiness        []qmimanager.UIMReadiness
@@ -53,6 +60,29 @@ type esimSwitchRestoreBackendStub struct {
 	openChannelStarted  chan<- struct{}
 	openChannelRelease  <-chan struct{}
 	setModeHook         func(backend.OperatingMode)
+}
+
+type postSwitchRetryPolicyResolver struct {
+	mu       sync.Mutex
+	policies []cardpolicy.Policy
+	calls    int
+}
+
+func (r *postSwitchRetryPolicyResolver) Resolve(iccid string) (cardpolicy.Policy, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	idx := r.calls
+	r.calls++
+	if idx >= len(r.policies) {
+		idx = len(r.policies) - 1
+	}
+	return r.policies[idx], nil
+}
+
+func (r *postSwitchRetryPolicyResolver) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }
 
 func setPrivateFieldSwitchRestore(t *testing.T, target any, fieldName string, value any) {
@@ -124,6 +154,16 @@ func withImmediatePostSwitchIdentityRetries(t *testing.T) {
 
 func (s *esimSwitchRestoreBackendStub) GetIMEI(ctx context.Context) (string, error) { return "", nil }
 func (s *esimSwitchRestoreBackendStub) GetIMSI(ctx context.Context) (string, error) {
+	s.liveIdentityMu.Lock()
+	defer s.liveIdentityMu.Unlock()
+	idx := s.liveIMSICalls
+	s.liveIMSICalls++
+	if len(s.liveIMSISeq) > 0 {
+		if idx >= len(s.liveIMSISeq) {
+			idx = len(s.liveIMSISeq) - 1
+		}
+		return s.liveIMSISeq[idx], nil
+	}
 	if s.liveIMSI != "" {
 		return s.liveIMSI, nil
 	}
@@ -133,6 +173,17 @@ func (s *esimSwitchRestoreBackendStub) GetIMSILive(ctx context.Context) (string,
 	return s.GetIMSI(ctx)
 }
 func (s *esimSwitchRestoreBackendStub) GetICCID(ctx context.Context) (string, error) {
+	s.liveIdentityMu.Lock()
+	defer s.liveIdentityMu.Unlock()
+	idx := s.liveICCIDCalls
+	s.liveICCIDCalls++
+	s.signalSecondLiveICCIDReadLocked()
+	if len(s.liveICCIDSeq) > 0 {
+		if idx >= len(s.liveICCIDSeq) {
+			idx = len(s.liveICCIDSeq) - 1
+		}
+		return s.liveICCIDSeq[idx], nil
+	}
 	if s.liveICCID != "" {
 		return s.liveICCID, nil
 	}
@@ -140,6 +191,18 @@ func (s *esimSwitchRestoreBackendStub) GetICCID(ctx context.Context) (string, er
 }
 func (s *esimSwitchRestoreBackendStub) GetICCIDLive(ctx context.Context) (string, error) {
 	return s.GetICCID(ctx)
+}
+
+func (s *esimSwitchRestoreBackendStub) signalSecondLiveICCIDReadLocked() {
+	if s.liveICCIDCalls == 2 && s.liveICCIDSecondRead != nil {
+		s.liveICCIDSecondOnce.Do(func() { close(s.liveICCIDSecondRead) })
+	}
+}
+
+func (s *esimSwitchRestoreBackendStub) liveIdentityReadCounts() (iccid int, imsi int) {
+	s.liveIdentityMu.Lock()
+	defer s.liveIdentityMu.Unlock()
+	return s.liveICCIDCalls, s.liveIMSICalls
 }
 func (s *esimSwitchRestoreBackendStub) GetUIMReadiness(ctx context.Context) (qmimanager.UIMReadiness, error) {
 	if len(s.uimReadiness) > 0 {
@@ -301,6 +364,14 @@ func withSwitchSnapshot(p *Pool, deviceID string, snapshot esimSwitchContext) {
 	p.switchMu.Lock()
 	p.switchingDevices[deviceID] = true
 	p.switchContexts[deviceID] = snapshot
+	if snapshot.SwitchToken != 0 {
+		p.switchTokens[deviceID] = snapshot.SwitchToken
+		p.postSwitchSessions[deviceID] = postSwitchSession{
+			Token:              snapshot.SwitchToken,
+			IdentityGeneration: snapshot.IdentityGeneration,
+			FinalizeClaimed:    snapshot.FinalizeClaimed,
+		}
+	}
 	p.switchMu.Unlock()
 }
 
@@ -1655,6 +1726,214 @@ func TestHandleESIMSwitchAfterStillConvergesIdentityWhenControlUnavailable(t *te
 			t.Fatalf("identity did not converge after degraded control readiness, got %+v", status)
 		case <-ticker.C:
 		}
+	}
+}
+
+func TestSchedulePostSwitchIdentityRefreshAppliesTargetCardPolicyAfterDeferredConvergence(t *testing.T) {
+	withImmediatePostSwitchIdentityRetries(t)
+	withFastPostSwitchIdentityPolling(t)
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	deviceID := "dev-1"
+	oldICCID := "89441000400316488370"
+	targetICCID := "89441600001002274233"
+	p.SetPolicyResolver(desiredVoWiFiMapPolicyResolver{policies: map[string]cardpolicy.Policy{
+		oldICCID: {
+			ICCID:           oldICCID,
+			NetworkEnabled:  true,
+			VoWiFiEnabled:   false,
+			AirplaneEnabled: false,
+			RoamingEnabled:  true,
+			IPVersion:       "v4",
+		},
+		targetICCID: {
+			ICCID:           targetICCID,
+			NetworkEnabled:  false,
+			VoWiFiEnabled:   true,
+			AirplaneEnabled: false,
+			RoamingEnabled:  true,
+			IPVersion:       "v4",
+		},
+	}})
+	be := &esimSwitchRestoreBackendStub{
+		mode:         backend.BackendQMI,
+		getMode:      backend.ModeOnline,
+		liveICCIDSeq: []string{oldICCID, oldICCID, targetICCID},
+		liveIMSISeq:  []string{"234159612842639", "234159612842639", "234209612842639"},
+	}
+	w := &Worker{
+		ID: deviceID,
+		Config: config.DeviceConfig{
+			ID:             deviceID,
+			NetworkEnabled: true,
+			VoWiFiEnabled:  false,
+		},
+		Backend: be,
+	}
+	w.state.Identity.Ready = true
+	w.state.Identity.ICCID = oldICCID
+	w.state.Identity.IMSI = "234159612842639"
+	p.workers[deviceID] = w
+	snapshot := p.beginESIMSwitch(deviceID, targetICCID)
+	snapshot.FlightModeBefore = false
+	snapshot.NetworkEnabledBefore = true
+	snapshot.ICCIDBefore = oldICCID
+	snapshot.IMSIBefore = "234159612842639"
+	snapshot.IdentityGeneration = w.BeginSIMIdentityTransition(targetICCID, "test")
+	p.updateESIMSwitchIdentityGeneration(deviceID, snapshot.SwitchToken, snapshot.IdentityGeneration)
+
+	p.handleESIMSwitchAfter(deviceID, snapshot.SwitchToken)
+
+	deadline := time.After(500 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if w.ConfirmedICCID() == targetICCID && w.Config.VoWiFiEnabled && w.Config.AirplaneEnabled && !w.Config.NetworkEnabled {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("deferred identity refresh did not apply target card policy, status=%+v config=%+v", w.ProjectDeviceStatus(), w.Config)
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestHandleESIMSwitchAfterNormalFinalizeKeepsRetryLeaseForIdentityRefreshAndPolicyProjection(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	deviceID := "dev-1"
+	targetICCID := "89441600001002274233"
+	originalDelays := append([]time.Duration(nil), postSwitchIdentityRetryDelays...)
+	postSwitchIdentityRetryDelays = []time.Duration{40 * time.Millisecond}
+	t.Cleanup(func() { postSwitchIdentityRetryDelays = originalDelays })
+
+	retryICCIDRead := make(chan struct{})
+	retryPolicyProjected := make(chan struct{})
+	policyResolver := &postSwitchRetryPolicyResolver{
+		policies: []cardpolicy.Policy{
+			{ICCID: targetICCID, NetworkEnabled: false, VoWiFiEnabled: false, AirplaneEnabled: false, RoamingEnabled: false},
+			{ICCID: targetICCID, NetworkEnabled: false, VoWiFiEnabled: false, AirplaneEnabled: true, RoamingEnabled: true},
+		},
+	}
+	p.SetPolicyResolver(policyResolver)
+	var retryPolicyProjectedOnce sync.Once
+	be := &esimSwitchRestoreBackendStub{
+		mode:                backend.BackendQMI,
+		getMode:             backend.ModeOnline,
+		liveICCID:           targetICCID,
+		liveIMSI:            "234209612842639",
+		liveICCIDSeq:        []string{targetICCID, targetICCID},
+		liveIMSISeq:         []string{"234209612842639", "234209612842639"},
+		liveICCIDSecondRead: retryICCIDRead,
+		setModeHook: func(mode backend.OperatingMode) {
+			if mode == backend.ModeRFOff {
+				retryPolicyProjectedOnce.Do(func() { close(retryPolicyProjected) })
+			}
+		},
+	}
+	w := &Worker{
+		ID:      deviceID,
+		Config:  config.DeviceConfig{ID: deviceID},
+		Backend: be,
+	}
+	p.workers[deviceID] = w
+	snapshot := p.beginESIMSwitch(deviceID, targetICCID)
+
+	p.handleESIMSwitchAfter(deviceID, snapshot.SwitchToken)
+
+	// 先校验同步 finalize：它必须完成首轮身份确认和目标策略投影；这不代表延迟重试已执行。
+	initialICCIDReads, initialIMSIReads := be.liveIdentityReadCounts()
+	if w.ConfirmedICCID() != targetICCID || w.Config.VoWiFiEnabled || w.Config.AirplaneEnabled || w.Config.RoamingEnabled || policyResolver.callCount() != 1 {
+		t.Fatalf("initial finalize did not confirm target identity and project target policy: identity=%q config=%+v policy_resolves=%d live_iccid_reads=%d live_imsi_reads=%d", w.ConfirmedICCID(), w.Config, policyResolver.callCount(), initialICCIDReads, initialIMSIReads)
+	}
+
+	// 旧的 token 生命周期实现会在正常 finalize 后撤销 retry lease，因而这里会明确超时；
+	// 不再以 session map 消失判断完成，因为 lease 申请失败也会导致 map 消失。
+	select {
+	case <-retryICCIDRead:
+	case <-time.After(500 * time.Millisecond):
+		iccidReads, imsiReads := be.liveIdentityReadCounts()
+		t.Fatalf("normal finalize retry did not issue its second live ICCID read before deadline: identity=%q policy_resolves=%d live_iccid_reads=%d live_imsi_reads=%d", w.ConfirmedICCID(), policyResolver.callCount(), iccidReads, imsiReads)
+	}
+	select {
+	case <-retryPolicyProjected:
+	case <-time.After(500 * time.Millisecond):
+		iccidReads, imsiReads := be.liveIdentityReadCounts()
+		t.Fatalf("identity retry read ICCID but did not project its policy before deadline: identity=%q policy_resolves=%d live_iccid_reads=%d live_imsi_reads=%d", w.ConfirmedICCID(), policyResolver.callCount(), iccidReads, imsiReads)
+	}
+	if w.ConfirmedICCID() != targetICCID || !w.Config.AirplaneEnabled || !w.Config.RoamingEnabled || policyResolver.callCount() != 2 {
+		iccidReads, imsiReads := be.liveIdentityReadCounts()
+		t.Fatalf("identity retry did not preserve target identity and target policy: identity=%q config=%+v policy_resolves=%d live_iccid_reads=%d live_imsi_reads=%d", w.ConfirmedICCID(), w.Config, policyResolver.callCount(), iccidReads, imsiReads)
+	}
+}
+
+func TestPostSwitchRetryLeaseNewTokenBlocksOldIdentityReadAndPolicyProjection(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	originalDelays := append([]time.Duration(nil), postSwitchIdentityRetryDelays...)
+	postSwitchIdentityRetryDelays = []time.Duration{40 * time.Millisecond}
+	t.Cleanup(func() { postSwitchIdentityRetryDelays = originalDelays })
+
+	be := &esimSwitchRestoreBackendStub{
+		mode:      backend.BackendQMI,
+		liveICCID: "old-target",
+		liveIMSI:  "234159612842639",
+	}
+	w := &Worker{ID: "dev-1", Config: config.DeviceConfig{ID: "dev-1"}, Backend: be}
+	p.workers[w.ID] = w
+	p.SetPolicyResolver(&stubPolicyResolver{pol: cardpolicy.Policy{ICCID: "old-target", RoamingEnabled: true}})
+
+	old := p.beginESIMSwitch(w.ID, "old-target")
+	p.schedulePostSwitchIdentityRefreshes(w.ID, old)
+	newer := p.beginESIMSwitch(w.ID, "new-target")
+	w.BeginSIMIdentityTransition("new-target", "test_newer_switch")
+
+	time.Sleep(100 * time.Millisecond)
+	iccidReads, imsiReads := be.liveIdentityReadCounts()
+	if iccidReads != 0 || imsiReads != 0 {
+		t.Fatalf("old retry read identity after newer token: iccid_reads=%d imsi_reads=%d", iccidReads, imsiReads)
+	}
+	if w.ConfirmedICCID() != "" || !w.SIMIdentityConvergenceMatches("new-target", 0) || w.Config.RoamingEnabled {
+		t.Fatalf("old retry changed newer switch state: token=%d identity=%q target_matches=%v roaming=%v", newer.SwitchToken, w.ConfirmedICCID(), w.SIMIdentityConvergenceMatches("new-target", 0), w.Config.RoamingEnabled)
+	}
+}
+
+func TestRefreshPostSwitchIdentityRejectsStaleGenerationBeforeCommit(t *testing.T) {
+	withFastPostSwitchIdentityPolling(t)
+	p := NewPool(&config.Config{})
+	targetICCID := "89441600001002274233"
+	be := &esimSwitchRestoreBackendStub{
+		mode:      backend.BackendQMI,
+		liveICCID: targetICCID,
+		liveIMSI:  "234209612842639",
+	}
+	w := &Worker{
+		ID:      "dev-1",
+		Config:  config.DeviceConfig{ID: "dev-1"},
+		Backend: be,
+	}
+	w.cacheMu.Lock()
+	w.state.Identity.Phase = simIdentityPhaseTransitioning
+	w.state.Identity.TargetICCID = targetICCID
+	w.state.Identity.Generation = 2
+	w.cacheMu.Unlock()
+
+	ready, err := p.refreshPostSwitchIdentityWithPolling("dev-1", w, esimSwitchContext{
+		ICCIDBefore:        "89441000400316488370",
+		IMSIBefore:         "234159612842639",
+		TargetICCID:        targetICCID,
+		IdentityGeneration: 1,
+	}, 20*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("refreshPostSwitchIdentityWithPolling() err=nil, want stale generation rejection")
+	}
+	if ready {
+		t.Fatal("ready=true, want false for stale generation")
+	}
+	status := w.ProjectDeviceStatus()
+	if status.ICCID == targetICCID || status.IMSI == "234209612842639" {
+		t.Fatalf("stale generation refresh must not commit identity, got iccid=%q imsi=%q", status.ICCID, status.IMSI)
 	}
 }
 

@@ -149,6 +149,9 @@ func TestLiveSOCKS5UDPIKEInitToEPDG(t *testing.T) {
 
 func liveIKEProposal(t *testing.T) ikev2.SecurityAssociation {
 	t.Helper()
+	if os.Getenv("VOHIVE_LIVE_IKE_SUITE") == "aes256-sha256-prfsha512-modp2048" {
+		return liveIKEProposalForGroup(ikev2.DHGroup2048BitMODP)
+	}
 	switch os.Getenv("VOHIVE_LIVE_IKE_DH_GROUP") {
 	case "", "curve25519":
 		return ikev2.SecurityAssociation{}
@@ -170,11 +173,34 @@ func liveIKEProposal(t *testing.T) ikev2.SecurityAssociation {
 	}
 }
 
+func TestLiveIKEProposalExactAES256Suite(t *testing.T) {
+	t.Setenv("VOHIVE_LIVE_IKE_SUITE", "aes256-sha256-prfsha512-modp2048")
+	t.Setenv("VOHIVE_LIVE_IKE_DH_GROUP", "")
+	sa := liveIKEProposal(t)
+	if len(sa.Proposals) != 1 {
+		t.Fatalf("proposal count=%d, want one exact suite", len(sa.Proposals))
+	}
+	transforms := sa.Proposals[0].Transforms
+	if len(transforms) != 4 {
+		t.Fatalf("transforms=%+v, want ENCR/PRF/INTEG/DH", transforms)
+	}
+	if transforms[0].Type != ikev2.TransformENCR || transforms[0].ID != ikev2.ENCR_AES_CBC || len(transforms[0].Attributes) != 1 || binary.BigEndian.Uint16(transforms[0].Attributes[0].Value) != 256 {
+		t.Fatalf("encryption=%+v, want AES-CBC-256", transforms[0])
+	}
+	if transforms[1].ID != ikev2.PRF_HMAC_SHA2_512 || transforms[2].ID != ikev2.INTEG_HMAC_SHA2_256_128 || transforms[3].ID != ikev2.DHGroup2048BitMODP {
+		t.Fatalf("transforms=%+v, want PRF512/SHA256/MODP2048", transforms)
+	}
+}
+
 func liveIKEProposalForGroup(group uint16) ikev2.SecurityAssociation {
 	prf := ikev2.PRF_HMAC_SHA2_256
 	integ := ikev2.INTEG_HMAC_SHA2_256_128
+	keyBits := uint16(128)
 	switch os.Getenv("VOHIVE_LIVE_IKE_SUITE") {
 	case "", "sha256":
+	case "aes256-sha256-prfsha512-modp2048":
+		keyBits = 256
+		prf = ikev2.PRF_HMAC_SHA2_512
 	case "sha1":
 		prf = ikev2.PRF_HMAC_SHA1
 		integ = ikev2.INTEG_HMAC_SHA1_96
@@ -185,7 +211,7 @@ func liveIKEProposalForGroup(group uint16) ikev2.SecurityAssociation {
 		Number:     1,
 		ProtocolID: ikev2.ProtocolIKE,
 		Transforms: []ikev2.Transform{
-			{Type: ikev2.TransformENCR, ID: ikev2.ENCR_AES_CBC, Attributes: []ikev2.TransformAttribute{ikev2.KeyLengthAttribute(128)}},
+			{Type: ikev2.TransformENCR, ID: ikev2.ENCR_AES_CBC, Attributes: []ikev2.TransformAttribute{ikev2.KeyLengthAttribute(keyBits)}},
 			{Type: ikev2.TransformPRF, ID: prf},
 			{Type: ikev2.TransformINTEG, ID: integ},
 			{Type: ikev2.TransformDHRGroup, ID: group},

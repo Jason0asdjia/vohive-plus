@@ -317,6 +317,9 @@ func (p *Pool) runPostSwitchConvergence(deviceID string, token uint64, worker *W
 	}
 	readiness, ok := worker.Backend.(postSwitchReadinessProvider)
 	if !ok {
+		if worker.Backend.Mode() == backend.BackendAT {
+			return p.preparePostSwitchATIdentity(deviceID, token, worker, snapshot)
+		}
 		logger.Info("eSIM 切卡后 UIM readiness 不可用，回退到 live SIM 身份轮询",
 			"device", deviceID,
 			"switch_token", token,

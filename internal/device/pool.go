@@ -188,11 +188,14 @@ type Pool struct {
 	deviceEventWakeMu  sync.Mutex
 	deviceEventWakeups map[string]*deviceEventRecoverWakeup
 
-	switchMu         sync.Mutex
-	switchingDevices map[string]bool
-	switchContexts   map[string]esimSwitchContext
-	switchTokens     map[string]uint64
-	switchSeq        uint64
+	switchMu                       sync.Mutex
+	switchingDevices               map[string]bool
+	switchContexts                 map[string]esimSwitchContext
+	switchTokens                   map[string]uint64
+	postSwitchSessions             map[string]postSwitchSession
+	switchSeq                      uint64
+	postSwitchFinalizeClaimHook    func()
+	postSwitchPolicyProjectionHook func()
 
 	// 概览监控页面流定阅数统计
 	overviewSubs atomic.Int32
@@ -221,6 +224,7 @@ func NewPool(cfg *config.Config) *Pool {
 		switchingDevices:      make(map[string]bool),
 		switchContexts:        make(map[string]esimSwitchContext),
 		switchTokens:          make(map[string]uint64),
+		postSwitchSessions:    make(map[string]postSwitchSession),
 		lifecycle:             newLifecycleCoordinator(),
 	}
 	p.transportRecovery = NewTransportRecoveryController(p)
