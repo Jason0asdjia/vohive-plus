@@ -12,7 +12,7 @@ use crate::backend_variants::{
     RESOURCE_VOHIVE_PLUS, VARIANT_VOCAT,
 };
 use crate::desktop_config;
-use crate::health::{check_health, WEB_URL};
+use crate::health::check_health;
 use crate::logs::RingLog;
 use crate::models::{
     ActionResult, BackendStatus, BackendVariant, RuntimeStatus, SetBackendVariantRequest, UsbDevice,
@@ -348,8 +348,12 @@ pub fn logs(state: State<'_, AppState>) -> Vec<String> {
 
 #[tauri::command]
 pub fn open_web() -> ActionResult {
+    let health = check_health();
+    if !health.ok {
+        return action(false, health.message, None, None);
+    }
     match hidden_command("cmd")
-        .args(["/C", "start", "", WEB_URL])
+        .args(["/C", "start", "", &health.url])
         .spawn()
     {
         Ok(_) => action(true, "已打开 Web UI", None, None),

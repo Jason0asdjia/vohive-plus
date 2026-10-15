@@ -162,6 +162,8 @@ func Init(dbPath string) error {
 		&SMSContact{},
 		&SMSDelivery{},
 		&SMSDeliveryPart{},
+		&AutomaticTask{},
+		&AutomaticTaskRun{},
 		&TrafficMinute{},
 		&TrafficHour{},
 		&TrafficDay{},

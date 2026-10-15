@@ -113,6 +113,41 @@ func UpsertCardPolicy(p CardPolicy) error {
 	}).Create(&p).Error
 }
 
+// ReplaceCardPolicyIfUnchanged replaces a policy only when it still matches
+// the version previously read by the caller. The returned policy is always the
+// effective row after the attempt.
+func ReplaceCardPolicyIfUnchanged(expected, replacement CardPolicy) (bool, CardPolicy, error) {
+	if DB == nil {
+		return false, CardPolicy{}, errors.New("db 未初始化")
+	}
+	NormalizeCardPolicy(&expected)
+	NormalizeCardPolicy(&replacement)
+	if expected.ICCID == "" || replacement.ICCID != expected.ICCID {
+		return false, CardPolicy{}, errors.New("ICCID 不匹配")
+	}
+	now := time.Now()
+	result := DB.Model(&CardPolicy{}).
+		Where("iccid = ? AND updated_at = ?", expected.ICCID, expected.UpdatedAt).
+		Updates(map[string]any{
+			"network_enabled":  replacement.NetworkEnabled,
+			"vowifi_enabled":   replacement.VoWiFiEnabled,
+			"airplane_enabled": replacement.AirplaneEnabled,
+			"roaming_enabled":  replacement.RoamingEnabled,
+			"ip_version":       replacement.IPVersion,
+			"apn":              replacement.APN,
+			"source":           replacement.Source,
+			"updated_at":       now,
+		})
+	if result.Error != nil {
+		return false, CardPolicy{}, result.Error
+	}
+	current, err := GetCardPolicy(expected.ICCID)
+	if err != nil {
+		return false, CardPolicy{}, err
+	}
+	return result.RowsAffected == 1, current, nil
+}
+
 // ResolveCardPolicy 解析 ICCID→策略；缺失则按默认模板自动建档并返回。
 func ResolveCardPolicy(iccid string) (CardPolicy, error) {
 	got, err := GetCardPolicy(iccid)

@@ -152,6 +152,15 @@ func withImmediatePostSwitchIdentityRetries(t *testing.T) {
 	})
 }
 
+func withFastPostSwitchCoreReadyWait(t *testing.T) {
+	t.Helper()
+	original := postSwitchCoreReadyWaitTimeout
+	postSwitchCoreReadyWaitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		postSwitchCoreReadyWaitTimeout = original
+	})
+}
+
 func (s *esimSwitchRestoreBackendStub) GetIMEI(ctx context.Context) (string, error) { return "", nil }
 func (s *esimSwitchRestoreBackendStub) GetIMSI(ctx context.Context) (string, error) {
 	s.liveIdentityMu.Lock()
@@ -1680,6 +1689,7 @@ func TestHandleESIMSwitchAfterMarksDegradedWhenTargetICCIDStaysOld(t *testing.T)
 func TestHandleESIMSwitchAfterStillConvergesIdentityWhenControlUnavailable(t *testing.T) {
 	withImmediatePostSwitchIdentityRetries(t)
 	withFastPostSwitchIdentityPolling(t)
+	withFastPostSwitchCoreReadyWait(t)
 	p := NewPool(&config.Config{})
 	defer p.cancel()
 	deviceID := "dev-1"
@@ -1705,13 +1715,12 @@ func TestHandleESIMSwitchAfterStillConvergesIdentityWhenControlUnavailable(t *te
 	w.state.Identity.Ready = true
 	w.cacheMu.Unlock()
 	p.workers[deviceID] = w
-	withSwitchSnapshot(p, deviceID, esimSwitchContext{
-		ICCIDBefore: "old-iccid",
-		IMSIBefore:  "old-imsi",
-		TargetICCID: "target-iccid",
-	})
+	snapshot := p.beginESIMSwitch(deviceID, "target-iccid")
+	if snapshot.SwitchToken == 0 {
+		t.Fatal("beginESIMSwitch() returned zero token")
+	}
 
-	p.handleESIMSwitchAfter(deviceID, 0)
+	p.handleESIMSwitchAfter(deviceID, snapshot.SwitchToken)
 
 	deadline := time.After(500 * time.Millisecond)
 	ticker := time.NewTicker(10 * time.Millisecond)

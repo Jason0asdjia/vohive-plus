@@ -343,7 +343,7 @@ func Start(ctx context.Context, req StartRequest) (*Instance, error) {
 			return nil, fmt.Errorf("SWU tunnel establishment incomplete: %s", firstRuntimeNonEmpty(tunnelResult.Reason, "not ready"))
 		}
 	}
-	imsReady := req.IMSRegistrar == nil
+	imsReady := false
 	imsReason := ""
 	imsResult := IMSRegistrationResult{}
 	if req.IMSRegistrar != nil {
@@ -370,6 +370,14 @@ func Start(ctx context.Context, req StartRequest) (*Instance, error) {
 		imsReason = firstRuntimeNonEmpty(res.Reason, res.Server)
 		imsResult = res
 	}
+	smsTransport := req.SMSTransport
+	if smsTransport == nil {
+		smsTransport = imsResult.SMSTransport
+	}
+	ussdTransport := req.USSDTransport
+	if ussdTransport == nil {
+		ussdTransport = imsResult.USSDTransport
+	}
 	state := State{
 		DeviceID:      req.DeviceID,
 		Phase:         PhaseReady,
@@ -378,7 +386,7 @@ func Start(ctx context.Context, req StartRequest) (*Instance, error) {
 		AccessReady:   modem != nil,
 		TunnelReady:   tunnelReady,
 		IMSReady:      imsReady,
-		SMSReady:      true,
+		SMSReady:      imsReady && smsTransport != nil,
 		RegStatus:     regStatus,
 		RegStatusText: regText,
 		NetworkMode:   strings.TrimSpace(req.NetworkMode),
@@ -389,14 +397,6 @@ func Start(ctx context.Context, req StartRequest) (*Instance, error) {
 		state.NetworkMode = modem.GetNetworkMode()
 	}
 	svc := messaging.NewService(req.DeviceID, req.Profile.IMSI, req.DeliveryStore, req.Dispatch)
-	smsTransport := req.SMSTransport
-	if smsTransport == nil {
-		smsTransport = imsResult.SMSTransport
-	}
-	ussdTransport := req.USSDTransport
-	if ussdTransport == nil {
-		ussdTransport = imsResult.USSDTransport
-	}
 	voiceConfig := runtimeVoiceAgentConfigFromStart(req)
 	inst := &Instance{
 		state:       state,
@@ -674,9 +674,14 @@ func (i *Instance) recordIMSRecoveryFailure(ctx context.Context, err error) {
 		return
 	}
 	i.state.IMSReady = false
+	i.state.SMSReady = false
 	i.state.LastReason = "IMS registration recovery failed: " + err.Error()
 	i.state.UpdatedAt = time.Now()
+	svc := i.service
 	i.mu.Unlock()
+	if svc != nil {
+		svc.SetSMSTransport(nil)
+	}
 	i.notify(ctx)
 }
 
@@ -709,15 +714,14 @@ func (i *Instance) applyIMSRegistrationResult(ctx context.Context, result IMSReg
 		}
 	}
 	i.state.IMSReady = result.Registered
+	i.state.SMSReady = result.Registered && smsTransport != nil
 	i.state.LastReason = firstRuntimeNonEmpty(reason, result.Server, "IMS registration recovered")
 	i.state.UpdatedAt = time.Now()
 	svc := i.service
 	i.mu.Unlock()
 
 	if svc != nil {
-		if smsTransport != nil {
-			svc.SetSMSTransport(i.wrapSMSTransport(smsTransport))
-		}
+		svc.SetSMSTransport(i.wrapSMSTransport(smsTransport))
 		if ussdTransport != nil {
 			svc.SetUSSDTransport(i.wrapUSSDTransport(ussdTransport))
 		}

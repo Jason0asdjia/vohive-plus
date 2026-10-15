@@ -68,6 +68,9 @@ func TestStartUsesIMSRegistrarResult(t *testing.T) {
 	if !st.IMSReady || st.LastReason != "ims registered" {
 		t.Fatalf("state=%+v", st)
 	}
+	if st.SMSReady {
+		t.Fatalf("SMSReady=true without SMS transport: %+v", st)
+	}
 	if registrar.config.DeviceID != "dev-1" || registrar.config.TraceID != "trace-1" || registrar.config.Access == nil {
 		t.Fatalf("registrar config=%+v", registrar.config)
 	}
@@ -564,7 +567,7 @@ func TestStartRejectsUnregisteredIMSResult(t *testing.T) {
 	}
 }
 
-func TestStartWithoutIMSRegistrarKeepsCompatibilityReady(t *testing.T) {
+func TestStartWithoutIMSRegistrarKeepsIMSAndSMSNotReady(t *testing.T) {
 	inst, err := Start(context.Background(), StartRequest{
 		DeviceID: "dev-1",
 		Access:   NewModemAccessAdapter(testModem{}),
@@ -572,11 +575,34 @@ func TestStartWithoutIMSRegistrarKeepsCompatibilityReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if !inst.State().IMSReady {
-		t.Fatalf("IMSReady=false without explicit registrar")
+	if inst.State().IMSReady || inst.State().SMSReady {
+		t.Fatalf("state=%+v, want IMS and SMS not ready without explicit registrar", inst.State())
 	}
 	if inst.State().TunnelReady {
 		t.Fatalf("TunnelReady=true without explicit tunnel manager")
+	}
+}
+
+func TestIMSRecoveryFailureClearsSMSCapabilityAndTransport(t *testing.T) {
+	transport := &runtimeSMSTransport{}
+	svc := messaging.NewService("dev-1", "310280233641503", nil, nil)
+	inst := &Instance{
+		state:   State{IMSReady: true, SMSReady: true},
+		service: svc,
+	}
+	svc.SetSMSTransport(inst.wrapSMSTransport(transport))
+
+	inst.recordIMSRecoveryFailure(context.Background(), errors.New("registration rejected"))
+
+	if st := inst.State(); st.IMSReady || st.SMSReady {
+		t.Fatalf("state=%+v, want IMS and SMS not ready", st)
+	}
+	_, err := svc.SendSMSWithOptions(context.Background(), "+18005551212", "hello", messaging.SendOptions{})
+	if !errors.Is(err, messaging.ErrSMSTransportUnavailable) {
+		t.Fatalf("SendSMSWithOptions() err=%v, want ErrSMSTransportUnavailable", err)
+	}
+	if len(transport.requests) != 0 {
+		t.Fatalf("transport requests=%d, want 0 after recovery failure", len(transport.requests))
 	}
 }
 
@@ -910,6 +936,9 @@ func TestStartUsesIMSRegistrarSMSTransport(t *testing.T) {
 	}
 	if out.PartsTotal != 1 || len(smsTransport.requests) != 1 || smsTransport.requests[0].Peer != "+18005551212" {
 		t.Fatalf("outcome=%+v requests=%+v", out, smsTransport.requests)
+	}
+	if st := inst.State(); !st.IMSReady || !st.SMSReady {
+		t.Fatalf("state=%+v, want IMS and SMS ready", st)
 	}
 	ussd, err := inst.Service().SendUSSD(context.Background(), "*100#")
 	if err != nil {

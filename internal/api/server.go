@@ -87,6 +87,9 @@ type Server struct {
 	loginAttempts map[string]loginAttempt
 
 	shutdownCh chan struct{}
+
+	automaticTasks       *automaticTaskScheduler
+	automaticTasksCancel context.CancelFunc
 }
 
 type realtimeTrafficSubscriber interface {
@@ -255,6 +258,14 @@ func (s *Server) newRouter() *gin.Engine {
 		api.DELETE("/sms/messages/:id", s.handleDeleteSMSMessage) // 删除单条历史短信
 		api.DELETE("/sms/thread", s.handleDeleteSMSThread)        // 删除指定历史短信会话
 
+		// ===== 自动任务 =====
+		api.GET("/automatic-tasks", s.handleListAutomaticTasks)
+		api.POST("/automatic-tasks", s.handleCreateAutomaticTask)
+		api.PUT("/automatic-tasks/:task_id", s.handleUpdateAutomaticTask)
+		api.DELETE("/automatic-tasks/:task_id", s.handleDeleteAutomaticTask)
+		api.POST("/automatic-tasks/:task_id/actions/run", s.handleRunAutomaticTaskNow)
+		api.GET("/automatic-task-runs", s.handleListAutomaticTaskRuns)
+
 		// ===== 系统设置 =====
 		api.GET("/settings/notifications", s.handleGetNotificationSettings)    // 获取通知设置
 		api.PUT("/settings/notifications", s.handleUpdateNotificationSettings) // 更新通知设置
@@ -341,6 +352,7 @@ func (s *Server) newRouter() *gin.Engine {
 }
 
 func (s *Server) Run() error {
+	s.startAutomaticTasks()
 	r := s.newRouter()
 
 	srv := &http.Server{
@@ -360,6 +372,9 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.automaticTasksCancel != nil {
+		s.automaticTasksCancel()
+	}
 	// 广播关闭信号给所有内部持有的长连接（如 SSE），让它们主动退出
 	select {
 	case <-s.shutdownCh:

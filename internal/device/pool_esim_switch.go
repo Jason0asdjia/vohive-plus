@@ -53,6 +53,7 @@ type postSwitchSession struct {
 }
 
 var (
+	postSwitchCoreReadyWaitTimeout = 30 * time.Second
 	postSwitchIdentityPollTimeout  = 10 * time.Second
 	postSwitchIdentityPollInterval = 500 * time.Millisecond
 	postSwitchIdentityRetryDelays  = []time.Duration{time.Second, 3 * time.Second, 6 * time.Second}
@@ -627,7 +628,7 @@ func (p *Pool) refreshPostSwitchIdentityWithPollingForToken(deviceID string, tok
 }
 
 func (p *Pool) waitPostSwitchCoreReady(deviceID string, worker *Worker) {
-	if err := p.WaitQMIControlReady(deviceID, 30*time.Second); err != nil {
+	if err := p.WaitQMIControlReady(deviceID, postSwitchCoreReadyWaitTimeout); err != nil {
 		logger.Warn("切卡后等待控制面就绪超时，继续尝试恢复",
 			"device", deviceID, "err", err)
 		return

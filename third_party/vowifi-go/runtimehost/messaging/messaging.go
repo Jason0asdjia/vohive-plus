@@ -232,6 +232,7 @@ func (s *Service) SendSMSWithOptions(ctx context.Context, to, text string, opts 
 	state := "sent"
 	deliveryState := "sent"
 	lastErr := ""
+	var lastSendErr error
 	for _, part := range parts {
 		partNow := time.Now()
 		res := SMSSendResult{State: "sent"}
@@ -244,6 +245,9 @@ func (s *Service) SendSMSWithOptions(ctx context.Context, to, text string, opts 
 				MessageID: id,
 				Part:      part,
 			})
+		} else {
+			res = SMSSendResult{State: "failed", ErrorText: ErrSMSTransportUnavailable.Error()}
+			sendErr = ErrSMSTransportUnavailable
 		}
 		if res.State == "" {
 			res.State = "sent"
@@ -264,6 +268,7 @@ func (s *Service) SendSMSWithOptions(ctx context.Context, to, text string, opts 
 			state = "failed"
 			deliveryState = "failed"
 			lastErr = res.ErrorText
+			lastSendErr = sendErr
 			break
 		}
 		if res.State == "failed" {
@@ -276,11 +281,14 @@ func (s *Service) SendSMSWithOptions(ctx context.Context, to, text string, opts 
 	if s != nil && s.store != nil {
 		_ = s.store.UpdateSMSDeliveryState(id, state, lastErr, acks, time.Now())
 	}
-	if s != nil && s.dispatch != nil {
+	if state != "failed" && s != nil && s.dispatch != nil {
 		s.dispatch.Dispatch(ctx, eventhost.SMSSent{DevID: s.deviceID, TargetURI: to, Content: text, Time: now, TotalParts: len(parts)})
 	}
 	out := SendOutcome{MessageID: id, Parts: acks, PartsTotal: len(parts), State: state, DeliveryState: deliveryState}
 	if state == "failed" {
+		if lastSendErr != nil {
+			return out, lastSendErr
+		}
 		return out, errors.New(firstNonEmpty(lastErr, "sms send failed"))
 	}
 	return out, nil

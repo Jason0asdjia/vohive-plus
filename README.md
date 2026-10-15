@@ -31,6 +31,7 @@ VoHive 面向高通 4G/LTE/5G 模组，例如 Quectel EC20、EC25、EC21、EG25�
 | 多模组并发管理 | 支持 USB 热插拔发现、多设备状态监控和运行时设备管理。 |
 | 轻量级代理引擎 | 支持 SOCKS5 / HTTP 代理实例，按设备网卡绑定出站流量。 |
 | 通信与短信中心 | 通过统一 Web/API 管理 AT 短信收发、会话、联系人和 USSD 交互，短信可落库查询。 |
+| 自动任务 | 按周期绑定设备与 SIM/eSIM Profile，在设备级串行队列中自动准备 VoWiFi/蜂窝环境并执行短信或限时通话，支持重试、通知、立即执行和历史记录。 |
 | eSIM 管理 | 通过 AT 指令通道管理 eSIM Profile，包括下载、启用、停用、重命名和删除。 |
 | 全渠道通知 | 重要短信和系统告警可推送至 Telegram、Email、PushPlus、Bark、飞书、QQ 等渠道。 |
 | 多架构构建 | 支持 amd64、arm64、armv7 等 Linux 运行时构建。 |
@@ -77,7 +78,7 @@ winget install dorssel.usbipd-win
 ### 下载与启动
 
 1. 打开 [Releases](https://github.com/swordstudiox/vohive-plus/releases)。
-2. 下载 `vohive-plus-desktop_1.0.8_windows_x64.zip`。
+2. 下载 `vohive-plus-desktop_1.0.9_windows_x64.zip`。
 3. 解压到一个普通目录，例如 `D:\Apps\VoHivePlus`。
 4. 双击 `vohive-plus-desktop.exe`。
 5. 插入大疆 4G 模块。
@@ -113,10 +114,10 @@ Web 默认地址为 `http://127.0.0.1:7575/`，默认登录账号为 `admin/admi
 
 ## Release 产物
 
-- `vohive-plus-desktop_1.0.8_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、固定版本的 `iniwex5/vohive` 备份运行体资源、Action 打包时拉取的 VoCat latest Linux amd64 运行体、默认配置和 WSL USB 准备脚本。
-- `vohive-plus-firmware_1.0.8_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
-- `vohive-plus-firmware_1.0.8_linux_arm64`：Linux arm64 后端运行时。
-- `vohive-plus-firmware_1.0.8_linux_armv7`：Linux armv7 后端运行时。
+- `vohive-plus-desktop_1.0.9_windows_x64.zip`：Windows x64 桌面便携包，内含桌面壳、Linux amd64 后端运行时、固定版本的 `iniwex5/vohive` 备份运行体资源、Action 打包时拉取的 VoCat latest Linux amd64 运行体、默认配置和 WSL USB 准备脚本。
+- `vohive-plus-firmware_1.0.9_linux_amd64`：Linux amd64 后端运行时，适用于 WSL2 或 Linux x86_64 主机。
+- `vohive-plus-firmware_1.0.9_linux_arm64`：Linux arm64 后端运行时。
+- `vohive-plus-firmware_1.0.9_linux_armv7`：Linux armv7 后端运行时。
 - `*.sha256`：对应产物的 SHA256 校验文件。
 
 ## 开发者说明
@@ -143,7 +144,7 @@ cp -R web/dist internal/web/dist
 
 GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -buildvcs=false -tags "with_utls nomsgpack" \
-  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.8' -X 'github.com/swordstudiox/vohive-plus/internal/global.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+  -ldflags "-s -w -X 'github.com/swordstudiox/vohive-plus/internal/global.Version=1.0.9' -X 'github.com/swordstudiox/vohive-plus/internal/global.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
   -o dist/vohive-open_linux_amd64 ./cmd/vohive
 ```
 
@@ -195,7 +196,7 @@ cargo test
 git push origin main
 ```
 
-GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.8.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
+GitHub Actions 会在 `main` 推送后读取 `desktop/package.json` 中的版本号，构建后端多架构运行时、Windows 桌面便携包，并读取 `.github/release-notes/v1.0.9.md` 发布到 [vohive-plus/releases](https://github.com/swordstudiox/vohive-plus/releases)。如果需要重发历史版本，也可以手动运行 Release workflow 或推送 `vX.Y.Z` tag。
 
 后续版本遵循语义化版本规则：
 

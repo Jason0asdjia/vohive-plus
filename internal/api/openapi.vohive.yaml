@@ -20,6 +20,8 @@ tags:
     description: 仪表盘与全局状态
   - name: sms
     description: 短信收发与会话
+  - name: automatic-tasks
+    description: 周期任务、立即执行与执行记录
   - name: settings
     description: 系统信息、密码与通知设置
   - name: devices
@@ -576,6 +578,114 @@ paths:
           $ref: '#/components/responses/ErrorMessage'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /automatic-tasks:
+    get:
+      tags: [automatic-tasks]
+      summary: 列出自动任务
+      responses:
+        '200':
+          description: 自动任务列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomaticTaskListResponse'
+    post:
+      tags: [automatic-tasks]
+      summary: 创建自动任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomaticTaskInput'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomaticTask'
+        '400':
+          $ref: '#/components/responses/ErrorMessage'
+
+  /automatic-tasks/{task_id}:
+    parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          type: integer
+    put:
+      tags: [automatic-tasks]
+      summary: 更新或启停自动任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutomaticTaskInput'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomaticTask'
+    delete:
+      tags: [automatic-tasks]
+      summary: 删除自动任务及其执行记录
+      responses:
+        '200':
+          description: 已删除
+        '409':
+          description: 任务正在执行，暂时不能删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+
+  /automatic-tasks/{task_id}/actions/run:
+    parameters:
+      - in: path
+        name: task_id
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [automatic-tasks]
+      summary: 立即将任务加入设备串行队列
+      responses:
+        '202':
+          description: 已排队
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomaticTaskRun'
+
+  /automatic-task-runs:
+    get:
+      tags: [automatic-tasks]
+      summary: 分页列出自动任务执行记录
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: 执行记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomaticTaskRunsResponse'
         '500':
           $ref: '#/components/responses/ErrorMessage'
 
@@ -3387,6 +3497,120 @@ components:
           type: string
         aid_hex:
           type: string
+
+    AutomaticTaskInput:
+      type: object
+      required: [name, enabled, device_id, profile_iccid, task_type, environment, interval_days, start_date, run_time, phone]
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+        device_id:
+          type: string
+        profile_iccid:
+          type: string
+        profile_aid:
+          type: string
+        task_type:
+          type: string
+          enum: [sms, call]
+        environment:
+          type: string
+          enum: [vowifi, cellular]
+        interval_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        start_date:
+          type: string
+          format: date
+        run_time:
+          type: string
+          example: '17:13'
+        timezone:
+          type: string
+          default: Asia/Shanghai
+        phone:
+          type: string
+        message:
+          type: string
+        duration_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+        retry_count:
+          type: integer
+          minimum: 0
+          maximum: 5
+        notify:
+          type: boolean
+
+    AutomaticTask:
+      allOf:
+        - $ref: '#/components/schemas/AutomaticTaskInput'
+        - type: object
+          properties:
+            id:
+              type: integer
+            next_run_at:
+              type: string
+              format: date-time
+            last_run_at:
+              type: string
+              format: date-time
+            last_status:
+              type: string
+            last_error:
+              type: string
+
+    AutomaticTaskRun:
+      type: object
+      properties:
+        id:
+          type: integer
+        task_id:
+          type: integer
+        task_name:
+          type: string
+        device_id:
+          type: string
+        scheduled_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [queued, running, success, failed]
+        attempts:
+          type: integer
+        output:
+          type: string
+        error:
+          type: string
+
+    AutomaticTaskListResponse:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/AutomaticTask'
+
+    AutomaticTaskRunsResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AutomaticTaskRun'
+        total:
+          type: integer
 
     DeviceStatusResponse:
       type: object
